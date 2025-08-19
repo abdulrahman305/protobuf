@@ -5,13 +5,25 @@
 // license that can be found in the LICENSE file or at
 // https://developers.google.com/open-source/licenses/bsd
 
-#include "google/protobuf/compiler/hpb/gen_utils.h"
+#include "hpb_generator/gen_utils.h"
 
 #include <algorithm>
 #include <string>
 #include <vector>
 
+#include "absl/log/absl_log.h"
 #include "absl/strings/ascii.h"
+#include "absl/strings/escaping.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_replace.h"
+#include "absl/strings/string_view.h"
+#include "google/protobuf/descriptor.h"
+
+namespace {
+std::string EscapeTrigraphs(absl::string_view to_escape) {
+  return absl::StrReplaceAll(to_escape, {{"?", "\\?"}});
+}
+}  // namespace
 
 namespace google::protobuf::hpb_generator {
 
@@ -102,7 +114,7 @@ std::vector<const protobuf::FieldDescriptor*> FieldNumberOrder(
   return fields;
 }
 
-std::string ToCamelCase(const std::string& input, bool lower_first) {
+std::string ToCamelCase(const absl::string_view input, bool lower_first) {
   bool capitalize_next = !lower_first;
   std::string result;
   result.reserve(input.size());
@@ -124,6 +136,40 @@ std::string ToCamelCase(const std::string& input, bool lower_first) {
   }
 
   return result;
+}
+
+std::string DefaultValue(const FieldDescriptor* field) {
+  if (field->is_repeated()) {
+    return "::std::false_type()";
+  }
+  switch (field->cpp_type()) {
+    case FieldDescriptor::CPPTYPE_INT32:
+      return absl::StrCat(field->default_value_int32());
+    case FieldDescriptor::CPPTYPE_INT64:
+      return absl::StrCat(field->default_value_int64());
+    case FieldDescriptor::CPPTYPE_UINT32:
+      return absl::StrCat(field->default_value_uint32());
+    case FieldDescriptor::CPPTYPE_UINT64:
+      return absl::StrCat(field->default_value_uint64());
+    case FieldDescriptor::CPPTYPE_FLOAT:
+      return absl::StrCat(field->default_value_float());
+    case FieldDescriptor::CPPTYPE_DOUBLE:
+      return absl::StrCat(field->default_value_double());
+    case FieldDescriptor::CPPTYPE_BOOL:
+      return field->default_value_bool() ? "true" : "false";
+    case FieldDescriptor::CPPTYPE_MESSAGE:
+      return "::std::false_type()";
+    case FieldDescriptor::CPPTYPE_STRING:
+      return absl::StrCat(
+          "\"", EscapeTrigraphs(absl::CEscape(field->default_value_string())),
+          "\"");
+    default:
+      // TODO: b/375460289 - implement rest of scalars
+      ABSL_LOG(WARNING) << "Unsupported default value type (in-progress): <"
+                        << field->cpp_type_name()
+                        << "> For field: " << field->full_name();
+      return "::std::false_type()";
+  }
 }
 
 }  // namespace protobuf

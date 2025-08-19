@@ -108,7 +108,7 @@ cc_toolchain_config(
     linker_path = "/usr/tools",
     sysroot = "/usr/tools/xcode_14_0/macosx",
     target_cpu = "aarch64",
-    target_full_name = "aarch64-apple-macosx10.15",
+    target_full_name = "aarch64-apple-macosx11.0",
 )
 
 cc_toolchain_config(
@@ -125,7 +125,7 @@ cc_toolchain_config(
     linker_path = "/usr/tools",
     sysroot = "/usr/tools/xcode_14_0/macosx",
     target_cpu = "x86_64",
-    target_full_name = "x86_64-apple-macosx10.15",
+    target_full_name = "x86_64-apple-macosx11.0",
 )
 
 cc_toolchain_config(
@@ -133,7 +133,6 @@ cc_toolchain_config(
     extra_compiler_flags = [
         "-isystem/usr/lib/gcc/i686-w64-mingw32/10-posix/include/c++",
         "-isystem/usr/lib/gcc/i686-w64-mingw32/10-posix/include/c++/i686-w64-mingw32",
-        "-fsjlj-exceptions",
     ],
     extra_include = "/usr/lib/gcc/i686-w64-mingw32",
     extra_linker_flags = [

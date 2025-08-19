@@ -44,6 +44,7 @@
 #include "google/protobuf/test_util.h"
 #include "google/protobuf/unittest.pb.h"
 #include "google/protobuf/unittest_arena.pb.h"
+#include "google/protobuf/unittest_import.pb.h"
 #include "google/protobuf/unknown_field_set.h"
 #include "google/protobuf/wire_format_lite.h"
 
@@ -53,16 +54,19 @@
 #include "google/protobuf/port_def.inc"
 
 using proto2_arena_unittest::ArenaMessage;
-using protobuf_unittest::NestedTestAllTypes;
-using protobuf_unittest::TestAllExtensions;
-using protobuf_unittest::TestAllTypes;
-using protobuf_unittest::TestEmptyMessage;
-using protobuf_unittest::TestOneof2;
-using protobuf_unittest::TestRepeatedString;
+using proto2_unittest::NestedTestAllTypes;
+using proto2_unittest::TestAllExtensions;
+using proto2_unittest::TestAllTypes;
+using proto2_unittest::TestEmptyMessage;
+using proto2_unittest::TestOneof2;
+using proto2_unittest::TestRepeatedString;
+using ::testing::AnyOf;
 using ::testing::ElementsAreArray;
+using ::testing::HasSubstr;
 
 namespace google {
 namespace protobuf {
+
 
 class Notifier {
  public:
@@ -205,7 +209,7 @@ void TestCtorAndDtorTraits(std::vector<absl::string_view> def,
       ABSL_LOG(FATAL);
       return nullptr;
     }
-    const ClassData* GetClassData() const PROTOBUF_FINAL {
+    const internal::ClassData* GetClassData() const PROTOBUF_FINAL {
       ABSL_LOG(FATAL);
       return nullptr;
     }
@@ -237,6 +241,14 @@ void TestCtorAndDtorTraits(std::vector<absl::string_view> def,
     Arena::Create<TraitsProber>(&arena, 17);
   }
   EXPECT_THAT(actions, ElementsAreArray(with_int));
+}
+
+TEST(ArenaTest, ZeroAllocDoesNotReturnNull) {
+  Arena arena;
+  EXPECT_NE(arena.AllocateAligned(0), nullptr);
+  // Try again after allocating some memory.
+  arena.AllocateAligned(10000);
+  EXPECT_NE(arena.AllocateAligned(0), nullptr);
 }
 
 TEST(ArenaTest, AllConstructibleAndDestructibleCombinationsWorkCorrectly) {
@@ -514,7 +526,6 @@ TEST(ArenaTest, GetConstructTypeWorks) {
   EXPECT_EQ(CT::kUnknown, (Peer::GetConstructType<int, const int&>()));
 }
 
-#ifdef __cpp_if_constexpr
 class DispatcherTestProto : public Message {
  public:
   using InternalArenaConstructable_ = void;
@@ -528,8 +539,9 @@ class DispatcherTestProto : public Message {
       : Message(nullptr, nullptr) {
     ABSL_LOG(FATAL);
   }
-  DispatcherTestProto* New(Arena*) const PROTOBUF_FINAL { ABSL_LOG(FATAL); }
-  const ClassData* GetClassData() const PROTOBUF_FINAL { ABSL_LOG(FATAL); }
+  const internal::ClassData* GetClassData() const PROTOBUF_FINAL {
+    ABSL_LOG(FATAL);
+  }
 };
 // We use a specialization to inject behavior for the test.
 // This test is very intrusive and will have to be fixed if we change the
@@ -562,6 +574,18 @@ TEST(ArenaTest, CreateArenaConstructable) {
   TestUtil::ExpectAllFieldsSet(*copied);
   EXPECT_EQ(copied->GetArena(), &arena);
   EXPECT_EQ(copied->optional_nested_message().GetArena(), &arena);
+}
+
+TEST(ArenaTest, CreateArenaCheckFailsOnTooLargeInput) {
+  size_t max = std::numeric_limits<size_t>::max();
+
+  EXPECT_DEATH(Arena::CreateArray<double>(nullptr, max / sizeof(double) + 1),
+               "Requested size is too large to fit into size_t");
+
+  // For int32_t we trap even at this level because rounding up to 8 bytes will
+  // overflow.
+  EXPECT_DEATH(Arena::CreateArray<int32_t>(nullptr, max / sizeof(int32_t)),
+               "Requested size is too large to fit into size_t");
 }
 
 TEST(ArenaTest, CreateRepeatedPtrField) {
@@ -599,7 +623,6 @@ TEST(ArenaTest, CreateMessageDispatchesToSpecialFunctions) {
   Arena::Create<DispatcherTestProto>(nullptr, 1);
   EXPECT_EQ(hook_called, "fallback");
 }
-#endif  // __cpp_if_constexpr
 
 TEST(ArenaTest, Parsing) {
   TestAllTypes original;
@@ -652,7 +675,7 @@ TEST(ArenaTest, UnknownFields) {
   arena_message_3->mutable_unknown_fields()->AddVarint(1000, 42);
   arena_message_3->mutable_unknown_fields()->AddFixed32(1001, 42);
   arena_message_3->mutable_unknown_fields()->AddFixed64(1002, 42);
-  arena_message_3->mutable_unknown_fields()->AddLengthDelimited(1003);
+  arena_message_3->mutable_unknown_fields()->AddLengthDelimited(1003, "");
   arena_message_3->mutable_unknown_fields()->DeleteSubrange(0, 2);
   arena_message_3->mutable_unknown_fields()->DeleteByNumber(1002);
   arena_message_3->mutable_unknown_fields()->DeleteByNumber(1003);
@@ -916,9 +939,12 @@ TEST(ArenaTest, SetAllocatedAcrossArenas) {
         Arena::Create<TestAllTypes::NestedMessage>(&arena2);
     arena2_submessage->set_bb(42);
 #if GTEST_HAS_DEATH_TEST
-    EXPECT_DEBUG_DEATH(arena1_message->set_allocated_optional_nested_message(
-                           arena2_submessage),
-                       "submessage_arena");
+    EXPECT_DEBUG_DEATH(
+        arena1_message->set_allocated_optional_nested_message(
+            arena2_submessage),
+        AnyOf(
+            HasSubstr("submessage_arena"),
+            HasSubstr("instance_arena == nullptr || instance_arena == arena")));
 #endif
     EXPECT_NE(arena2_submessage,
               arena1_message->mutable_optional_nested_message());
@@ -931,7 +957,8 @@ TEST(ArenaTest, SetAllocatedAcrossArenas) {
 #if GTEST_HAS_DEATH_TEST
   EXPECT_DEBUG_DEATH(
       heap_message->set_allocated_optional_nested_message(arena1_submessage),
-      "submessage_arena");
+      AnyOf(HasSubstr("submessage_arena"),
+            HasSubstr("instance_arena == nullptr || instance_arena == arena")));
 #endif
   EXPECT_NE(arena1_submessage, heap_message->mutable_optional_nested_message());
   delete heap_message;
@@ -1409,11 +1436,11 @@ TEST(ArenaTest, ExtensionsOnArena) {
   Arena arena;
   // Ensure no leaks.
   TestAllExtensions* message_ext = Arena::Create<TestAllExtensions>(&arena);
-  message_ext->SetExtension(protobuf_unittest::optional_int32_extension, 42);
-  message_ext->SetExtension(protobuf_unittest::optional_string_extension,
+  message_ext->SetExtension(proto2_unittest::optional_int32_extension, 42);
+  message_ext->SetExtension(proto2_unittest::optional_string_extension,
                             std::string("test"));
   message_ext
-      ->MutableExtension(protobuf_unittest::optional_nested_message_extension)
+      ->MutableExtension(proto2_unittest::optional_nested_message_extension)
       ->set_bb(42);
 }
 
@@ -1529,6 +1556,9 @@ TEST(ArenaTest, ClearOneofMessageOnArena) {
   if (!internal::DebugHardenClearOneofMessageOnArena()) {
     GTEST_SKIP() << "arena allocated oneof message fields are not hardened.";
   }
+  if (google::protobuf::internal::ForceEagerlyVerifiedLazyInProtoc()) {
+    GTEST_SKIP() << "Forced layout invalidates the test.";
+  }
 
   Arena arena;
   auto* message = Arena::Create<unittest::TestOneof2>(&arena);
@@ -1538,13 +1568,13 @@ TEST(ArenaTest, ClearOneofMessageOnArena) {
   child->set_moo_int(100);
   message->clear_foo_message();
 
-#ifndef PROTOBUF_ASAN
-  EXPECT_NE(child->moo_int(), 100);
-#else
-#if GTEST_HAS_DEATH_TEST && defined(__cpp_if_constexpr)
-  EXPECT_DEATH(EXPECT_EQ(child->moo_int(), 0), "use-after-poison");
-#endif
-#endif
+  if (internal::HasMemoryPoisoning()) {
+#if GTEST_HAS_DEATH_TEST
+    EXPECT_DEATH(EXPECT_EQ(child->moo_int(), 0), "use-after-poison");
+#endif  // !GTEST_HAS_DEATH_TEST
+  } else {
+    EXPECT_NE(child->moo_int(), 100);
+  }
 }
 
 TEST(ArenaTest, CopyValuesWithinOneof) {
@@ -1557,7 +1587,15 @@ TEST(ArenaTest, CopyValuesWithinOneof) {
   auto* foo = message->mutable_foogroup();
   foo->set_a(100);
   foo->set_b("hello world");
-  message->set_foo_string(message->foogroup().b());
+  if (internal::ForceInlineStringInProtoc() && internal::HasMemoryPoisoning()) {
+#if GTEST_HAS_DEATH_TEST
+    EXPECT_DEATH(message->set_foo_string(message->foogroup().b()),
+                 "use-after-poison");
+#endif  // !GTEST_HAS_DEATH_TEST
+    return;
+  } else {
+    message->set_foo_string(message->foogroup().b());
+  }
 
   // As a debug hardening measure, `set_foo_string` would clear `foo` in
   // (!NDEBUG && !ASAN) and the copy wouldn't work.
@@ -1605,13 +1643,6 @@ TEST(ArenaTest, NoHeapAllocationsTest) {
   }
 
   arena.Reset();
-}
-
-TEST(ArenaTest, ParseCorruptedString) {
-  TestAllTypes message;
-  TestUtil::SetAllFields(&message);
-  TestParseCorruptedString<TestAllTypes, true>(message);
-  TestParseCorruptedString<TestAllTypes, false>(message);
 }
 
 #if PROTOBUF_RTTI
@@ -1846,7 +1877,10 @@ TEST(ArenaTest, SpaceReuseForArraysSizeChecks) {
 }
 
 TEST(ArenaTest, SpaceReusePoisonsAndUnpoisonsMemory) {
-#ifdef PROTOBUF_ASAN
+  if constexpr (!internal::HasMemoryPoisoning()) {
+    GTEST_SKIP() << "Memory poisoning not enabled.";
+  }
+
   char buf[1024]{};
   constexpr int kSize = 32;
   {
@@ -1855,19 +1889,21 @@ TEST(ArenaTest, SpaceReusePoisonsAndUnpoisonsMemory) {
     for (int i = 0; i < 100; ++i) {
       void* p = Arena::CreateArray<char>(&arena, kSize);
       // Simulate other ASan client managing shadow memory.
-      ASAN_POISON_MEMORY_REGION(p, kSize);
-      ASAN_UNPOISON_MEMORY_REGION(p, kSize - 4);
+      internal::PoisonMemoryRegion(p, kSize);
+      internal::UnpoisonMemoryRegion(p, kSize - 4);
       pointers.push_back(p);
     }
     for (void* p : pointers) {
       internal::ArenaTestPeer::ReturnArrayMemory(&arena, p, kSize);
       // The first one is not poisoned because it becomes the freelist.
-      if (p != pointers[0]) EXPECT_TRUE(__asan_address_is_poisoned(p));
+      if (p != pointers[0]) {
+        EXPECT_TRUE(internal::IsMemoryPoisoned(p));
+      }
     }
 
     bool found_poison = false;
     for (char& c : buf) {
-      if (__asan_address_is_poisoned(&c)) {
+      if (internal::IsMemoryPoisoned(&c)) {
         found_poison = true;
         break;
       }
@@ -1877,12 +1913,8 @@ TEST(ArenaTest, SpaceReusePoisonsAndUnpoisonsMemory) {
 
   // Should not be poisoned after destruction.
   for (char& c : buf) {
-    ASSERT_FALSE(__asan_address_is_poisoned(&c));
+    ASSERT_FALSE(internal::IsMemoryPoisoned(&c));
   }
-
-#else   // PROTOBUF_ASAN
-  GTEST_SKIP();
-#endif  // PROTOBUF_ASAN
 }
 
 

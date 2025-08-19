@@ -42,10 +42,10 @@ def _get_upb_minitable_proto_library_aspect_provides():
 upb_minitable_proto_library_aspect = aspect(
     attrs = {
         "_copts": attr.label(
-            default = "//upb:upb_proto_library_copts__for_generated_code_only_do_not_use",
+            default = "//upb:upb_proto_library_copts",
         ),
         "_upb_minitable_toolchain": attr.label(
-            default = Label("//upb_generator:protoc-gen-upb_minitable_toolchain"),
+            default = Label("//upb_generator/minitable:toolchain"),
         ),
         "_cc_toolchain": attr.label(
             default = "@bazel_tools//tools/cpp:current_cc_toolchain",
@@ -60,6 +60,7 @@ upb_minitable_proto_library_aspect = aspect(
     exec_groups = {
         "proto_compiler": exec_group(),
     },
+    required_providers = [ProtoInfo],
 )
 
 def _upb_minitable_proto_library_rule_impl(ctx):

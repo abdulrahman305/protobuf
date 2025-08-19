@@ -10,6 +10,7 @@
 #include "google/protobuf/compiler/plugin.h"
 
 #include <iostream>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -49,7 +50,7 @@ class GeneratorResponseContext : public GeneratorContext {
       : compiler_version_(compiler_version),
         response_(response),
         parsed_files_(parsed_files) {}
-  ~GeneratorResponseContext() override {}
+  ~GeneratorResponseContext() override = default;
 
   // implements GeneratorContext --------------------------------------
 

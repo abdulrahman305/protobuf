@@ -5,180 +5,181 @@
 # license that can be found in the LICENSE file or at
 # https://developers.google.com/open-source/licenses/bsd
 
+load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load(
-    "//hpb/bazel:upb_cc_proto_library.bzl",
-    "upb_cc_proto_library_copts",
-)
-load(
-    "//upb/bazel:build_defs.bzl",
-    "UPB_DEFAULT_CPPOPTS",
+    "//hpb/bazel:hpb_proto_library.bzl",
+    "hpb_proto_library_copts",
 )
 
-# begin:google_only
-# package(default_applicable_licenses = ["//upb:license"])
-# end:google_only
+package(default_applicable_licenses = ["//:license"])
 
 licenses(["notice"])
+
+string_flag(
+    name = "hpb_backend",
+    build_setting_default = "upb",
+    values = [
+        "upb",
+        "cpp",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hpb_backend_upb",
+    flag_values = {
+        ":hpb_backend": "upb",
+    },
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hpb_backend_cpp",
+    flag_values = {
+        ":hpb_backend": "cpp",
+    },
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "hpb",
+    hdrs = [
+        "hpb.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":arena",
+        ":extension",
+        ":multibackend",
+        ":ptr",
+        ":status",
+        "//hpb/internal",
+        "//hpb/internal:message_lock",
+        "//hpb/internal:template_help",
+        "@abseil-cpp//absl/base:core_headers",
+        "@abseil-cpp//absl/status:statusor",
+        "@abseil-cpp//absl/strings",
+    ] + select({
+        ":hpb_backend_cpp": [
+            "//hpb/backend/cpp",
+        ],
+        ":hpb_backend_upb": [
+            "//hpb/backend/upb",
+            "//hpb/backend/upb:interop",
+            "//upb/mini_table",
+            "//upb/wire",
+        ],
+    }),
+)
+
+cc_library(
+    name = "multibackend",
+    hdrs = [
+        "multibackend.h",
+    ],
+    defines = select({
+        ":hpb_backend_upb": ["HPB_INTERNAL_BACKEND=HPB_INTERNAL_BACKEND_UPB"],
+        ":hpb_backend_cpp": ["HPB_INTERNAL_BACKEND=HPB_INTERNAL_BACKEND_CPP"],
+    }),
+    visibility = ["//hpb:__subpackages__"],
+)
 
 cc_library(
     name = "repeated_field",
     hdrs = [
         "repeated_field.h",
-        "repeated_field_iterator.h",
     ],
-    compatible_with = ["//buildenv/target:non_prod"],
-    copts = UPB_DEFAULT_CPPOPTS,
     visibility = ["//visibility:public"],
     deps = [
-        ":hpb",
-        ":traits",
-        "//upb:base",
-        "//upb:mem",
-        "//upb:message",
-        "//upb:message_copy",
-        "@com_google_absl//absl/base:core_headers",
-        "@com_google_absl//absl/strings",
-    ],
-)
-
-cc_library(
-    name = "hpb",
-    srcs = [
-        "hpb.cc",
-    ],
-    hdrs = [
-        "hpb.h",
-    ],
-    compatible_with = ["//buildenv/target:non_prod"],
-    copts = UPB_DEFAULT_CPPOPTS,
-    visibility = ["//visibility:public"],
-    deps = [
-        ":extension_lock",
-        "//upb:base",
-        "//upb:mem",
-        "//upb:message",
-        "//upb:message_copy",
-        "//upb:message_promote",
-        "//upb:mini_table",
-        "//upb:wire",
-        "//upb:wire_reader",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/strings:str_format",
-    ],
-)
-
-# Internally used type traits.
-cc_library(
-    name = "traits",
-    hdrs = [
-        "traits.h",
-    ],
-    compatible_with = ["//buildenv/target:non_prod"],
-    copts = UPB_DEFAULT_CPPOPTS,
-    # TODO: update visibility back to private once upb/protos gets removed
-    visibility = ["//protos:__subpackages__"],
-)
-
-cc_library(
-    name = "internal",
-    hdrs = ["internal.h"],
-    compatible_with = ["//buildenv/target:non_prod"],
-    copts = UPB_DEFAULT_CPPOPTS,
-    visibility = ["//upb:friends"],
-    deps = [
-        ":hpb",
-        "//upb:mem",
-        "//upb:message",
-        "//upb:mini_table",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@com_google_absl//absl/strings:str_format",
-    ],
-)
-
-cc_library(
-    name = "extension_lock",
-    srcs = ["extension_lock.cc"],
-    hdrs = [
-        "extension_lock.h",
-    ],
-    compatible_with = ["//buildenv/target:non_prod"],
-    copts = UPB_DEFAULT_CPPOPTS,
-    visibility = ["//upb:friends"],
-    deps = [
-        "//upb:message",
-        "@com_google_absl//absl/base:core_headers",
-        "@com_google_absl//absl/synchronization",
-    ],
+        ":multibackend",
+        ":ptr",
+        "@abseil-cpp//absl/strings",
+    ] + select({
+        ":hpb_backend_cpp": [
+        ],
+        ":hpb_backend_upb": [
+            "//hpb/backend/upb:repeated_field",
+        ],
+    }),
 )
 
 # Common support code for C++ generated code.
 cc_library(
-    name = "generated_protos_support__only_for_generated_code_do_not_use__i_give_permission_to_break_me",
-    hdrs = [
-        "internal.h",
+    name = "generated_hpb_support",
+    visibility = [
+        "//hpb/bazel:__pkg__",
+        "//hpb_generator:__pkg__",
     ],
-    compatible_with = ["//buildenv/target:non_prod"],
-    copts = UPB_DEFAULT_CPPOPTS,
-    visibility = ["//visibility:public"],
     deps = [
         ":hpb",
-        ":internal",
         ":repeated_field",
-        "//upb:mem",
-        "//upb:message",
+        "//upb/mem",
+        "//upb/message",
     ],
 )
 
-cc_test(
-    name = "internal_test",
-    srcs = ["internal_test.cc"],
-    copts = UPB_DEFAULT_CPPOPTS,
-    deps = [
-        ":internal",
-        "//src/google/protobuf/compiler/hpb/tests:test_model_upb_cc_proto",
-        "//src/google/protobuf/compiler/hpb/tests:test_model_upb_proto",
-        "//upb:mem",
-        "@com_google_googletest//:gtest",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
-
-upb_cc_proto_library_copts(
-    name = "upb_cc_proto_library_copts__for_generated_code_only_do_not_use",
-    copts = UPB_DEFAULT_CPPOPTS,
-    visibility = ["//visibility:public"],
-)
-
-cc_test(
-    name = "repeated_field_iterator_test",
-    srcs = ["repeated_field_iterator_test.cc"],
-    deps = [
-        ":repeated_field",
-        "@com_google_googletest//:gtest",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
-
-cc_test(
-    name = "extension_lock_test",
-    srcs = ["extension_lock_test.cc"],
-    deps = [
-        "//hpb",
-        "//hpb:extension_lock",
-        "//src/google/protobuf/compiler/hpb/tests:test_model_upb_cc_proto",
-        "//upb:mem",
-        "@com_google_absl//absl/hash",
-        "@com_google_absl//absl/log:absl_check",
-        "@com_google_googletest//:gtest",
-        "@com_google_googletest//:gtest_main",
-    ],
+hpb_proto_library_copts(
+    name = "hpb_proto_library_copts",
+    visibility = ["//hpb/bazel:__pkg__"],
 )
 
 cc_library(
     name = "requires",
     hdrs = ["requires.h"],
     visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "ptr",
+    hdrs = ["ptr.h"],
+    visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "arena",
+    hdrs = ["arena.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":multibackend",
+        "//hpb/backend:types",
+    ] + select({
+        ":hpb_backend_cpp": [
+            "//src/google/protobuf:arena",
+        ],
+        ":hpb_backend_upb": [
+            "//upb/mem",
+        ],
+    }),
+)
+
+cc_library(
+    name = "status",
+    srcs = ["status.cc"],
+    hdrs = ["status.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//upb/wire",
+        "@abseil-cpp//absl/status",
+        "@abseil-cpp//absl/strings:str_format",
+    ],
+)
+
+cc_library(
+    name = "extension",
+    srcs = ["extension.cc"],
+    hdrs = ["extension.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":arena",
+        ":multibackend",
+        ":ptr",
+        "//hpb/backend/upb:extension",
+        "//hpb/backend/upb:interop",
+        "//hpb/internal:message_lock",
+        "//hpb/internal:template_help",
+        "//upb/message",
+        "//upb/mini_table",
+        "@abseil-cpp//absl/base:core_headers",
+    ],
 )

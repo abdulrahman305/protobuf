@@ -5,11 +5,11 @@
 # license that can be found in the LICENSE file or at
 # https://developers.google.com/open-source/licenses/bsd
 
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("//upb/bazel:build_defs.bzl", "UPB_DEFAULT_COPTS")
 
-# begin:google_only
-# package(default_applicable_licenses = ["//upb:license"])
-# end:google_only
+package(default_applicable_licenses = ["//:license"])
 
 cc_library(
     name = "lex",
@@ -27,7 +27,7 @@ cc_library(
     ],
     copts = UPB_DEFAULT_COPTS,
     visibility = ["//visibility:public"],
-    deps = ["//upb:port"],
+    deps = ["//upb/port"],
 )
 
 cc_test(
@@ -35,9 +35,9 @@ cc_test(
     srcs = ["atoi_test.cc"],
     deps = [
         ":lex",
-        "@com_google_absl//absl/strings",
-        "@com_google_googletest//:gtest",
-        "@com_google_googletest//:gtest_main",
+        "@abseil-cpp//absl/strings",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
     ],
 )
 
@@ -46,12 +46,11 @@ cc_test(
     srcs = ["round_trip_test.cc"],
     deps = [
         ":lex",
-        "@com_google_googletest//:gtest",
-        "@com_google_googletest//:gtest_main",
+        "@googletest//:gtest",
+        "@googletest//:gtest_main",
     ],
 )
 
-# begin:github_only
 filegroup(
     name = "source_files",
     srcs = glob(
@@ -65,9 +64,7 @@ filegroup(
         "//upb/cmake:__pkg__",
     ],
 )
-# end:github_only
 
-# begin:github_only
 filegroup(
     name = "test_srcs",
     srcs = glob(
@@ -77,4 +74,3 @@ filegroup(
     ),
     visibility = ["//pkg:__pkg__"],
 )
-# end:github_only

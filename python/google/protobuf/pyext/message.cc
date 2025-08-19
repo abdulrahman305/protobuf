@@ -22,6 +22,7 @@
 
 #include "absl/log/absl_check.h"
 #include "absl/strings/match.h"
+#include "absl/strings/str_cat.h"
 
 #ifndef PyVarObject_HEAD_INIT
 #define PyVarObject_HEAD_INIT(type, size) PyObject_HEAD_INIT(type) size,
@@ -491,7 +492,7 @@ void OutOfRangeError(PyObject* arg) {
 
 template <class RangeType, class ValueType>
 bool VerifyIntegerCastAndRange(PyObject* arg, ValueType value) {
-  if (PROTOBUF_PREDICT_FALSE(value == -1 && PyErr_Occurred())) {
+  if (ABSL_PREDICT_FALSE(value == -1 && PyErr_Occurred())) {
     if (PyErr_ExceptionMatches(PyExc_OverflowError)) {
       // Replace it with the same ValueError as pure python protos instead of
       // the default one.
@@ -500,7 +501,7 @@ bool VerifyIntegerCastAndRange(PyObject* arg, ValueType value) {
     }  // Otherwise propagate existing error.
     return false;
   }
-  if (PROTOBUF_PREDICT_FALSE(!IsValidNumericCast<RangeType>(value))) {
+  if (ABSL_PREDICT_FALSE(!IsValidNumericCast<RangeType>(value))) {
     OutOfRangeError(arg);
     return false;
   }
@@ -514,7 +515,7 @@ bool CheckAndGetInteger(PyObject* arg, T* value) {
   // This definition includes everything with a valid __index__() implementation
   // and shouldn't cast the net too wide.
   if (!strcmp(Py_TYPE(arg)->tp_name, "numpy.ndarray") ||
-      PROTOBUF_PREDICT_FALSE(!PyIndex_Check(arg))) {
+      ABSL_PREDICT_FALSE(!PyIndex_Check(arg))) {
     FormatTypeError(arg, "int");
     return false;
   }
@@ -558,7 +559,7 @@ template bool CheckAndGetInteger<uint64_t>(PyObject*, uint64_t*);
 bool CheckAndGetDouble(PyObject* arg, double* value) {
   *value = PyFloat_AsDouble(arg);
   if (!strcmp(Py_TYPE(arg)->tp_name, "numpy.ndarray") ||
-      PROTOBUF_PREDICT_FALSE(*value == -1 && PyErr_Occurred())) {
+      ABSL_PREDICT_FALSE(*value == -1 && PyErr_Occurred())) {
     FormatTypeError(arg, "int, float");
     return false;
   }
@@ -576,14 +577,38 @@ bool CheckAndGetFloat(PyObject* arg, float* value) {
 
 bool CheckAndGetBool(PyObject* arg, bool* value) {
   long long_value = PyLong_AsLong(arg);  // NOLINT
-  if (!strcmp(Py_TYPE(arg)->tp_name, "numpy.ndarray") ||
-      (long_value == -1 && PyErr_Occurred())) {
+  if (long_value == -1 && PyErr_Occurred()) {
+    // In NumPy 2.3, numpy.bool does not have an __index__ method and cannot
+    // be converted to a long using PyLong_AsLong.
+    if (!strcmp(Py_TYPE(arg)->tp_name, "numpy.bool")) {
+      PyErr_Clear();
+      int is_true = PyObject_IsTrue(arg);
+      if (is_true >= 0) {
+        *value = static_cast<bool>(is_true);
+        return true;
+      }
+    }
+    FormatTypeError(arg, "int, bool");
+    return false;
+  } else if (!strcmp(Py_TYPE(arg)->tp_name, "numpy.ndarray")) {
     FormatTypeError(arg, "int, bool");
     return false;
   }
   *value = static_cast<bool>(long_value);
 
   return true;
+}
+
+void CheckIntegerWithBool(PyObject* arg, const FieldDescriptor* field_des) {
+  static int bool_warning_count = 100;
+  if (bool_warning_count > 0 && (!strcmp(Py_TYPE(arg)->tp_name, "bool"))) {
+    --bool_warning_count;
+    std::string error_msg =
+        absl::StrCat(field_des->full_name(),
+                     ": Expected an int, got a boolean. This "
+                     "will be rejected in 7.34.0, please fix it before that");
+    PyErr_WarnEx(PyExc_DeprecationWarning, error_msg.c_str(), 3);
+  }
 }
 
 // Checks whether the given object (which must be "bytes" or "unicode") contains
@@ -851,6 +876,42 @@ static PyObject* GetIntegerEnumValue(const FieldDescriptor& descriptor,
   return value;
 }
 
+void DeleteLastRepeatedWithSize(CMessage* self,
+                                const FieldDescriptor* field_descriptor,
+                                Py_ssize_t n) {
+  Message* message = self->message;
+  const Reflection* reflection = message->GetReflection();
+  ABSL_DCHECK(reflection->FieldSize(*message, field_descriptor) >= n);
+  Arena* arena = message->GetArena();
+  ABSL_DCHECK_EQ(arena, nullptr)
+      << "python protobuf is expected to be allocated from heap";
+  for (; n > 0; n--) {
+    // It seems that RemoveLast() is less efficient for sub-messages, and
+    // the memory is not completely released. Prefer ReleaseLast().
+    //
+    // To work around a debug hardening (PROTOBUF_FORCE_COPY_IN_RELEASE),
+    // explicitly use UnsafeArenaReleaseLast. To not break rare use cases where
+    // arena is used, we fallback to ReleaseLast (but ABSL_DCHECK to find/fix
+    // it).
+    //
+    // Note that arena is likely null and ABSL_DCHECK and ReleaseLast might be
+    // redundant. The current approach takes extra cautious path not to disrupt
+    // production.
+    Message* sub_message =
+        (arena == nullptr)
+            ? reflection->UnsafeArenaReleaseLast(message, field_descriptor)
+            : reflection->ReleaseLast(message, field_descriptor);
+    // If there is a live weak reference to an item being removed, we "Release"
+    // it, and it takes ownership of the message.
+    if (CMessage* released = self->MaybeReleaseSubMessage(sub_message)) {
+      released->message = sub_message;
+    } else {
+      // sub_message was not transferred, delete it.
+      delete sub_message;
+    }
+  }
+}
+
 // Delete a slice from a repeated field.
 // The only way to remove items in C++ protos is to delete the last one,
 // so we swap items to move the deleted ones at the end, and then strip the
@@ -911,37 +972,14 @@ int DeleteRepeatedField(CMessage* self, const FieldDescriptor* field_descriptor,
     }
   }
 
-  Arena* arena = message->GetArena();
-  ABSL_DCHECK_EQ(arena, nullptr)
-      << "python protobuf is expected to be allocated from heap";
   // Remove items, starting from the end.
-  for (; length > to; length--) {
-    if (field_descriptor->cpp_type() != FieldDescriptor::CPPTYPE_MESSAGE) {
+  if (field_descriptor->cpp_type() == FieldDescriptor::CPPTYPE_MESSAGE) {
+    DeleteLastRepeatedWithSize(self, field_descriptor, length - to);
+  } else {
+    ABSL_DCHECK_EQ(message->GetArena(), nullptr)
+        << "python protobuf is expected to be allocated from heap";
+    for (; length > to; length--) {
       reflection->RemoveLast(message, field_descriptor);
-      continue;
-    }
-    // It seems that RemoveLast() is less efficient for sub-messages, and
-    // the memory is not completely released. Prefer ReleaseLast().
-    //
-    // To work around a debug hardening (PROTOBUF_FORCE_COPY_IN_RELEASE),
-    // explicitly use UnsafeArenaReleaseLast. To not break rare use cases where
-    // arena is used, we fallback to ReleaseLast (but ABSL_DCHECK to find/fix
-    // it).
-    //
-    // Note that arena is likely null and ABSL_DCHECK and ReleaesLast might be
-    // redundant. The current approach takes extra cautious path not to disrupt
-    // production.
-    Message* sub_message =
-        (arena == nullptr)
-            ? reflection->UnsafeArenaReleaseLast(message, field_descriptor)
-            : reflection->ReleaseLast(message, field_descriptor);
-    // If there is a live weak reference to an item being removed, we "Release"
-    // it, and it takes ownership of the message.
-    if (CMessage* released = self->MaybeReleaseSubMessage(sub_message)) {
-      released->message = sub_message;
-    } else {
-      // sub_message was not transferred, delete it.
-      delete sub_message;
     }
   }
 
@@ -1001,21 +1039,36 @@ int InitAttributes(CMessage* self, PyObject* args, PyObject* kwargs) {
           if (source_value.get() == nullptr || dest_value.get() == nullptr) {
             return -1;
           }
-          ScopedPyObjectPtr ok(PyObject_CallMethod(
-              dest_value.get(), "MergeFrom", "O", source_value.get()));
-          if (ok.get() == nullptr) {
+          if (!PyObject_TypeCheck(dest_value.get(), CMessage_Type)) {
+            PyErr_Format(PyExc_SystemError,
+                         "Unexpectedly, a map of messages contains a "
+                         "non-message value: %s",
+                         Py_TYPE(dest_value.get())->tp_name);
             return -1;
+          }
+          CMessage* target_message =
+              reinterpret_cast<CMessage*>(dest_value.get());
+          if (PyDict_Check(source_value.get())) {
+            if (InitAttributes(target_message, nullptr, source_value.get()) <
+                0) {
+              return -1;
+            }
+          } else {
+            ScopedPyObjectPtr ok(PyObject_CallMethod(
+                dest_value.get(), "MergeFrom", "O", source_value.get()));
+            if (ok.get() == nullptr) {
+              return -1;
+            }
           }
         }
       } else {
-        ScopedPyObjectPtr function_return;
-        function_return.reset(
+        ScopedPyObjectPtr ok(
             PyObject_CallMethod(map.get(), "update", "O", value));
-        if (function_return.get() == nullptr) {
+        if (ok.get() == nullptr) {
           return -1;
         }
       }
-    } else if (descriptor->label() == FieldDescriptor::LABEL_REPEATED) {
+    } else if (descriptor->is_repeated()) {
       ScopedPyObjectPtr container(GetFieldValue(self, descriptor));
       if (container == nullptr) {
         return -1;
@@ -1096,14 +1149,16 @@ int InitAttributes(CMessage* self, PyObject* args, PyObject* kwargs) {
             Descriptor::WELLKNOWNTYPE_STRUCT) {
           ScopedPyObjectPtr ok(PyObject_CallMethod(
               reinterpret_cast<PyObject*>(cmessage), "update", "O", value));
-          if (ok.get() == nullptr && PyDict_Size(value) == 1 &&
-              PyDict_Contains(value, PyUnicode_FromString("fields"))) {
-            // Fallback to init as normal message field.
-            PyErr_Clear();
-            PyObject* tmp = Clear(cmessage);
-            Py_DECREF(tmp);
-            if (InitAttributes(cmessage, nullptr, value) < 0) {
-              return -1;
+          if (ok.get() == nullptr && PyDict_Size(value) == 1) {
+            ScopedPyObjectPtr fields_str(PyUnicode_FromString("fields"));
+            if (PyDict_Contains(value, fields_str.get())) {
+              // Fallback to init as normal message field.
+              PyErr_Clear();
+              PyObject* tmp = Clear(cmessage);
+              Py_DECREF(tmp);
+              if (InitAttributes(cmessage, nullptr, value) < 0) {
+                return -1;
+              }
             }
           }
         } else {
@@ -1111,33 +1166,29 @@ int InitAttributes(CMessage* self, PyObject* args, PyObject* kwargs) {
             return -1;
           }
         }
-      } else {
-        if (PyObject_TypeCheck(value, CMessage_Type)) {
-          ScopedPyObjectPtr merged(MergeFrom(cmessage, value));
-          if (merged == nullptr) {
-            return -1;
-          }
-        } else {
-          if (descriptor->message_type()->well_known_type() !=
-                  Descriptor::WELLKNOWNTYPE_UNSPECIFIED &&
-              PyObject_HasAttrString(reinterpret_cast<PyObject*>(cmessage),
-                                     "_internal_assign")) {
-            AssureWritable(cmessage);
-            ScopedPyObjectPtr ok(
-                PyObject_CallMethod(reinterpret_cast<PyObject*>(cmessage),
-                                    "_internal_assign", "O", value));
-            if (ok.get() == nullptr) {
-              return -1;
-            }
-          } else {
-            PyErr_Format(PyExc_TypeError,
-                         "Parameter to initialize message field must be "
-                         "dict or instance of same class: expected %s got %s.",
-                         std::string(descriptor->full_name()).c_str(),
-                         Py_TYPE(value)->tp_name);
-            return -1;
-          }
+      } else if (PyObject_TypeCheck(value, CMessage_Type)) {
+        ScopedPyObjectPtr merged(MergeFrom(cmessage, value));
+        if (merged == nullptr) {
+          return -1;
         }
+      } else if (descriptor->message_type()->well_known_type() !=
+                     Descriptor::WELLKNOWNTYPE_UNSPECIFIED &&
+                 PyObject_HasAttrString(reinterpret_cast<PyObject*>(cmessage),
+                                        "_internal_assign")) {
+        AssureWritable(cmessage);
+        ScopedPyObjectPtr ok(
+            PyObject_CallMethod(reinterpret_cast<PyObject*>(cmessage),
+                                "_internal_assign", "O", value));
+        if (ok.get() == nullptr) {
+          return -1;
+        }
+      } else {
+        PyErr_Format(PyExc_TypeError,
+                     "Parameter to initialize message field must be "
+                     "dict or instance of same class: expected %s got %s.",
+                     std::string(descriptor->full_name()).c_str(),
+                     Py_TYPE(value)->tp_name);
+        return -1;
       }
     } else {
       ScopedPyObjectPtr new_val;
@@ -1291,7 +1342,7 @@ int HasFieldByDescriptor(CMessage* self,
   if (!CheckFieldBelongsToMessage(field_descriptor, message)) {
     return -1;
   }
-  if (field_descriptor->label() == FieldDescriptor::LABEL_REPEATED) {
+  if (field_descriptor->is_repeated()) {
     PyErr_SetString(PyExc_KeyError,
                     "Field is repeated. A singular method is required.");
     return -1;
@@ -1320,7 +1371,7 @@ const FieldDescriptor* FindFieldWithOneofs(const Message* message,
 
 bool CheckHasPresence(const FieldDescriptor* field_descriptor, bool in_oneof) {
   auto message_name = std::string(field_descriptor->containing_type()->name());
-  if (field_descriptor->label() == FieldDescriptor::LABEL_REPEATED) {
+  if (field_descriptor->is_repeated()) {
     PyErr_Format(
         PyExc_ValueError, "Protocol message %s has no singular \"%s\" field.",
         message_name.c_str(), std::string(field_descriptor->name()).c_str());
@@ -1900,10 +1951,9 @@ static PyObject* MergeFromString(CMessage* self, PyObject* arg) {
   // ctx has an explicit limit set (length of string_view), so we have to
   // check we ended at that limit.
   if (!ctx.EndedAtLimit()) {
-    // TODO: Raise error and return NULL instead.
-    // b/27494216
-    PyErr_Warn(nullptr, "Unexpected end-group tag: Not all data was converted");
-    return PyLong_FromLong(data.len - ctx.BytesUntilLimit(ptr));
+    PyErr_Format(DecodeError_class,
+                 "Unexpected end-group tag: Not all data was converted");
+    return nullptr;
   }
   return PyLong_FromLong(data.len);
 }
@@ -2217,21 +2267,25 @@ int InternalSetNonOneofScalar(Message* message,
   switch (field_descriptor->cpp_type()) {
     case FieldDescriptor::CPPTYPE_INT32: {
       PROTOBUF_CHECK_GET_INT32(arg, value, -1);
+      CheckIntegerWithBool(arg, field_descriptor);
       reflection->SetInt32(message, field_descriptor, value);
       break;
     }
     case FieldDescriptor::CPPTYPE_INT64: {
       PROTOBUF_CHECK_GET_INT64(arg, value, -1);
+      CheckIntegerWithBool(arg, field_descriptor);
       reflection->SetInt64(message, field_descriptor, value);
       break;
     }
     case FieldDescriptor::CPPTYPE_UINT32: {
       PROTOBUF_CHECK_GET_UINT32(arg, value, -1);
+      CheckIntegerWithBool(arg, field_descriptor);
       reflection->SetUInt32(message, field_descriptor, value);
       break;
     }
     case FieldDescriptor::CPPTYPE_UINT64: {
       PROTOBUF_CHECK_GET_UINT64(arg, value, -1);
+      CheckIntegerWithBool(arg, field_descriptor);
       reflection->SetUInt64(message, field_descriptor, value);
       break;
     }
@@ -2259,6 +2313,7 @@ int InternalSetNonOneofScalar(Message* message,
     }
     case FieldDescriptor::CPPTYPE_ENUM: {
       PROTOBUF_CHECK_GET_INT32(arg, value, -1);
+      CheckIntegerWithBool(arg, field_descriptor);
       if (!field_descriptor->legacy_enum_field_treated_as_closed()) {
         reflection->SetEnumValue(message, field_descriptor, value);
       } else {
@@ -2368,21 +2423,19 @@ PyObject* Contains(CMessage* self, PyObject* arg) {
       const Reflection* reflection = message->GetReflection();
       const FieldDescriptor* map_field = descriptor->FindFieldByName("fields");
       const FieldDescriptor* key_field = map_field->message_type()->map_key();
-      PyObject* py_string = CheckString(arg, key_field);
-      if (!py_string) {
+      ScopedPyObjectPtr py_string(CheckString(arg, key_field));
+      if (py_string.get() == nullptr) {
         PyErr_SetString(PyExc_TypeError,
                         "The key passed to Struct message must be a str.");
         return nullptr;
       }
       char* value;
       Py_ssize_t value_len;
-      if (PyBytes_AsStringAndSize(py_string, &value, &value_len) < 0) {
-        Py_DECREF(py_string);
+      if (PyBytes_AsStringAndSize(py_string.get(), &value, &value_len) < 0) {
         Py_RETURN_FALSE;
       }
       std::string key_str;
       key_str.assign(value, value_len);
-      Py_DECREF(py_string);
 
       MapKey map_key;
       map_key.SetStringValue(key_str);
@@ -2391,9 +2444,9 @@ PyObject* Contains(CMessage* self, PyObject* arg) {
     }
     case Descriptor::WELLKNOWNTYPE_LISTVALUE: {
       // For WKT ListValue, check if the key is in the items.
-      PyObject* items = PyObject_CallMethod(reinterpret_cast<PyObject*>(self),
-                                            "items", nullptr);
-      return PyBool_FromLong(PySequence_Contains(items, arg));
+      ScopedPyObjectPtr items(PyObject_CallMethod(
+          reinterpret_cast<PyObject*>(self), "items", nullptr));
+      return PyBool_FromLong(PySequence_Contains(items.get(), arg));
     }
     default:
       // For other messages, check with HasField.
@@ -2609,7 +2662,7 @@ int SetFieldValue(CMessage* self, const FieldDescriptor* field_descriptor,
                  std::string(field_descriptor->full_name()).c_str(),
                  Py_TYPE(self)->tp_name);
     return -1;
-  } else if (field_descriptor->label() == FieldDescriptor::LABEL_REPEATED) {
+  } else if (field_descriptor->is_repeated()) {
     PyErr_Format(PyExc_AttributeError,
                  "Assignment not allowed to repeated "
                  "field \"%s\" in protocol message object.",
@@ -2618,11 +2671,11 @@ int SetFieldValue(CMessage* self, const FieldDescriptor* field_descriptor,
   } else if (field_descriptor->cpp_type() == FieldDescriptor::CPPTYPE_MESSAGE) {
     if (field_descriptor->message_type()->well_known_type() !=
         Descriptor::WELLKNOWNTYPE_UNSPECIFIED) {
-      PyObject* sub_message = GetFieldValue(self, field_descriptor);
-      if (PyObject_HasAttrString(sub_message, "_internal_assign")) {
+      ScopedPyObjectPtr sub_message(GetFieldValue(self, field_descriptor));
+      if (PyObject_HasAttrString(sub_message.get(), "_internal_assign")) {
         AssureWritable(self);
-        ScopedPyObjectPtr ok(
-            PyObject_CallMethod(sub_message, "_internal_assign", "O", value));
+        ScopedPyObjectPtr ok(PyObject_CallMethod(
+            sub_message.get(), "_internal_assign", "O", value));
         if (ok.get() == nullptr) {
           return -1;
         }
@@ -2651,11 +2704,17 @@ PyObject* ContainerBase::DeepCopy() {
       cmessage::NewEmptyMessage(this->parent->GetMessageClass());
   new_parent->message = this->parent->message->New(nullptr);
 
-  // Copy the map field into the new message.
-  this->parent->message->GetReflection()->SwapFields(
-      this->parent->message, new_parent->message,
-      {this->parent_field_descriptor});
-  this->parent->message->MergeFrom(*new_parent->message);
+  // There is no API to copy a single field. The closest operation we have is
+  // SwapFields.
+  // So, we copy the source into a disposable message and then swap the one
+  // field we care about from it.
+  // If the performance of this operation matters we can do a copy of the single
+  // field, but that would require huge switches for each type+cardinality to
+  // call the right read/write field functions.
+  std::unique_ptr<Message> tmp(this->parent->message->New(nullptr));
+  tmp->MergeFrom(*this->parent->message);
+  tmp->GetReflection()->SwapFields(tmp.get(), new_parent->message,
+                                   {this->parent_field_descriptor});
 
   PyObject* result =
       cmessage::GetFieldValue(new_parent, this->parent_field_descriptor);

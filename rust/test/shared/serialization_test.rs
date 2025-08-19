@@ -5,17 +5,24 @@
 // license that can be found in the LICENSE file or at
 // https://developers.google.com/open-source/licenses/bsd
 
+#[cfg(not(bzl))]
+mod protos;
+#[cfg(not(bzl))]
+use protos::*;
+
 use googletest::prelude::*;
+use protobuf::prelude::*;
+use protobuf::View;
+
 use paste::paste;
-use unittest_edition_rust_proto::TestAllTypes as TestAllTypesEditions;
 use unittest_proto3_optional_rust_proto::TestProto3Optional;
 use unittest_proto3_rust_proto::TestAllTypes as TestAllTypesProto3;
-use unittest_rust_proto::TestAllTypes as TestAllTypesProto2;
+use unittest_rust_proto::{TestAllTypes, TestRequired};
 
 macro_rules! generate_parameterized_serialization_test {
     ($(($type: ident, $name_ext: ident)),*) => {
         paste! { $(
-            #[test]
+            #[gtest]
             fn [< serialization_zero_length_ $name_ext >]() {
                 let mut msg = [< $type >]::new();
 
@@ -29,7 +36,13 @@ macro_rules! generate_parameterized_serialization_test {
                 assert_that!(serialized.len(), eq(0));
             }
 
-            #[test]
+            #[gtest]
+            fn [< serialize_default_view $name_ext>]() {
+                let default = View::<[< $type >]>::default();
+                assert_that!(default.serialize().unwrap().len(), eq(0));
+            }
+
+            #[gtest]
             fn [< serialize_deserialize_message_ $name_ext>]() {
                 let mut msg = [< $type >]::new();
                 msg.set_optional_int64(42);
@@ -44,17 +57,17 @@ macro_rules! generate_parameterized_serialization_test {
                 assert_that!(msg.optional_bytes(), eq(msg2.optional_bytes()));
             }
 
-            #[test]
+            #[gtest]
             fn [< deserialize_empty_ $name_ext>]() {
                 assert!([< $type >]::parse(&[]).is_ok());
             }
 
-            #[test]
+            #[gtest]
             fn [< deserialize_error_ $name_ext>]() {
                 assert!([< $type >]::parse(b"not a serialized proto").is_err());
             }
 
-            #[test]
+            #[gtest]
             fn [< set_bytes_with_serialized_data_ $name_ext>]() {
                 let mut msg = [< $type >]::new();
                 msg.set_optional_int64(42);
@@ -64,20 +77,39 @@ macro_rules! generate_parameterized_serialization_test {
                 assert_that!(msg2.optional_bytes(), eq(msg.serialize().unwrap()));
             }
 
-            #[test]
+            #[gtest]
             fn [< deserialize_on_previously_allocated_message_ $name_ext>]() {
                 let mut msg = [< $type >]::new();
                 msg.set_optional_int64(42);
-                msg.set_optional_bool(true);
                 msg.set_optional_bytes(b"serialize deserialize test");
 
                 let serialized = msg.serialize().unwrap();
 
                 let mut msg2 = Box::new([< $type >]::new());
+                msg2.set_optional_bool(true);
+
                 assert!(msg2.clear_and_parse(&serialized).is_ok());
-                assert_that!(msg.optional_int64(), eq(msg2.optional_int64()));
-                assert_that!(msg.optional_bool(), eq(msg2.optional_bool()));
-                assert_that!(msg.optional_bytes(), eq(msg2.optional_bytes()));
+                assert_that!(msg2.optional_int64(), eq(msg.optional_int64()));
+                assert_that!(msg2.optional_bytes(), eq(msg.optional_bytes()));
+                assert_that!(msg2.optional_bool(), eq(false));
+            }
+
+            #[gtest]
+            fn [< deserialize_on_previously_allocated_message_mut_ $name_ext>]() {
+                let mut msg = [< $type >]::new();
+                msg.set_optional_int64(42);
+                msg.set_optional_bytes(b"serialize deserialize test");
+
+                let serialized = msg.serialize().unwrap();
+
+                let mut msg2 = Box::new([< $type >]::new());
+                let msg2_mut = msg2.as_mut();
+                msg2_mut.set_optional_bool(true);
+
+                assert!(msg2_mut.clear_and_parse(&serialized).is_ok());
+                assert_that!(msg2.optional_int64(), eq(msg.optional_int64()));
+                assert_that!(msg2.optional_bytes(), eq(msg.optional_bytes()));
+                assert_that!(msg2.optional_bool(), eq(false));
             }
 
         )* }
@@ -85,9 +117,8 @@ macro_rules! generate_parameterized_serialization_test {
   }
 
 generate_parameterized_serialization_test!(
-    (TestAllTypesProto2, proto2),
+    (TestAllTypes, editions),
     (TestAllTypesProto3, proto3),
-    (TestAllTypesEditions, editions),
     (TestProto3Optional, proto3_optional)
 );
 
@@ -95,7 +126,7 @@ macro_rules! generate_parameterized_int32_byte_size_test {
     ($(($type: ident, $name_ext: ident)),*) => {
         paste! { $(
 
-            #[test]
+            #[gtest]
             fn [< test_int32_byte_size_ $name_ext>]() {
                 let args = vec![(0, 1), (127, 1), (128, 2), (-1, 10)];
                 for arg in args {
@@ -115,10 +146,30 @@ macro_rules! generate_parameterized_int32_byte_size_test {
   }
 
 generate_parameterized_int32_byte_size_test!(
-    (TestAllTypesProto2, proto2),
-    (TestProto3Optional, proto3_optional), /* Test would fail if we were to use
-                                            * TestAllTypesProto3: optional_int32 follows "no
-                                            * presence" semantics and setting it to 0 (default
-                                            * value) will cause it to not be serialized */
-    (TestAllTypesEditions, editions)
+    (TestAllTypes, editions),
+    (TestProto3Optional, proto3_optional) /* Test would fail if we were to use
+                                           * TestAllTypesProto3: optional_int32 follows "no
+                                           * presence" semantics and setting it to 0 (default
+                                           * value) will cause it to not be serialized */
 );
+
+#[gtest]
+fn test_required_field_enforced() {
+    // Empty bytes slice is a valid binaryproto with no fields set -- therefore it should not parse
+    // as a message with required fields.
+    expect_that!(TestRequired::parse(&[]), err(anything()));
+
+    let mut msg = TestRequired::new();
+    expect_that!(msg.clear_and_parse(&[]), err(anything()));
+}
+
+#[gtest]
+fn test_required_field_not_enforced() {
+    // Empty bytes slice is a valid binaryproto with no fields set.
+    let mut msg = TestRequired::parse_dont_enforce_required(&[]).unwrap();
+    expect_that!(msg.has_a(), eq(false));
+
+    msg.set_a(1);
+    msg.clear_and_parse_dont_enforce_required(&[]).unwrap();
+    expect_that!(msg.has_a(), eq(false));
+}

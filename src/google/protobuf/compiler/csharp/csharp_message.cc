@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <sstream>
+#include <string>
 
 #include "google/protobuf/compiler/code_generator.h"
 #include "absl/container/flat_hash_map.h"
@@ -63,9 +64,11 @@ MessageGenerator::MessageGenerator(const Descriptor* descriptor,
   }
 }
 
-MessageGenerator::~MessageGenerator() {}
+MessageGenerator::~MessageGenerator() = default;
 
-std::string MessageGenerator::class_name() { return descriptor_->name(); }
+std::string MessageGenerator::class_name() {
+  return std::string(descriptor_->name());
+}
 
 std::string MessageGenerator::full_class_name() {
   return GetClassName(descriptor_);
@@ -209,7 +212,7 @@ void MessageGenerator::Generate(io::Printer* printer) {
     const OneofDescriptor* oneof = descriptor_->oneof_decl(i);
     vars["name"] = UnderscoresToCamelCase(oneof->name(), false);
     vars["property_name"] = UnderscoresToCamelCase(oneof->name(), true);
-    vars["original_name"] = oneof->name();
+    vars["original_name"] = std::string(oneof->name());
     printer->Print(vars,
                    "private object $name$_;\n"
                    "/// <summary>Enum of possible cases for the "

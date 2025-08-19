@@ -14,6 +14,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -25,29 +26,30 @@
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/substitute.h"
+#include "json/config.h"
+#include "json/reader.h"
+#include "json/value.h"
+#include "binary_wireformat.h"
 #include "conformance/conformance.pb.h"
 #include "conformance_test.h"
 #include "conformance/test_protos/test_messages_edition2023.pb.h"
 #include "editions/golden/test_messages_proto2_editions.pb.h"
 #include "editions/golden/test_messages_proto3_editions.pb.h"
-#include "google/protobuf/endian.h"
 #include "google/protobuf/json/json.h"
 #include "google/protobuf/test_messages_proto2.pb.h"
-#include "google/protobuf/test_messages_proto2.pb.h"
-#include "google/protobuf/test_messages_proto3.pb.h"
 #include "google/protobuf/test_messages_proto3.pb.h"
 #include "google/protobuf/text_format.h"
 #include "google/protobuf/unknown_field_set.h"
 #include "google/protobuf/util/type_resolver_util.h"
 #include "google/protobuf/wire_format_lite.h"
 
-using conformance::ConformanceRequest;
-using conformance::ConformanceResponse;
-using conformance::WireFormat;
+using ::conformance::ConformanceRequest;
+using ::conformance::ConformanceResponse;
+using ::conformance::TestStatus;
+using ::conformance::WireFormat;
 using google::protobuf::Descriptor;
 using google::protobuf::FieldDescriptor;
 using google::protobuf::internal::WireFormatLite;
-using google::protobuf::internal::little_endian::FromHost;
 using google::protobuf::util::NewTypeResolverForDescriptorPool;
 using protobuf_test_messages::editions::TestAllTypesEdition2023;
 using protobuf_test_messages::proto2::TestAllTypesProto2;
@@ -74,74 +76,29 @@ std::string GetTypeUrl(const Descriptor* message) {
 // We would use CodedOutputStream except that we want more freedom to build
 // arbitrary protos (even invalid ones).
 
-// The maximum number of bytes that it takes to encode a 64-bit varint.
-#define VARINT_MAX_LEN 10
-
-size_t vencode64(uint64_t val, int over_encoded_bytes, char* buf) {
-  if (val == 0) {
-    buf[0] = 0;
-    return 1;
-  }
-  size_t i = 0;
-  while (val) {
-    uint8_t byte = val & 0x7fU;
-    val >>= 7;
-    if (val || over_encoded_bytes) byte |= 0x80U;
-    buf[i++] = byte;
-  }
-  while (over_encoded_bytes--) {
-    assert(i < 10);
-    uint8_t byte = over_encoded_bytes ? 0x80 : 0;
-    buf[i++] = byte;
-  }
-  return i;
-}
-
-std::string varint(uint64_t x) {
-  char buf[VARINT_MAX_LEN];
-  size_t len = vencode64(x, 0, buf);
-  return std::string(buf, len);
-}
-
-// Encodes a varint that is |extra| bytes longer than it needs to be, but still
-// valid.
+std::string varint(uint64_t x) { return google::protobuf::conformance::Varint(x).str(); }
 std::string longvarint(uint64_t x, int extra) {
-  char buf[VARINT_MAX_LEN];
-  size_t len = vencode64(x, extra, buf);
-  return std::string(buf, len);
+  return google::protobuf::conformance::LongVarint(x, extra).str();
 }
-
-std::string fixed32(void* data) {
-  uint32_t data_le;
-  std::memcpy(&data_le, data, 4);
-  data_le = FromHost(data_le);
-  return std::string(reinterpret_cast<char*>(&data_le), 4);
-}
-std::string fixed64(void* data) {
-  uint64_t data_le;
-  std::memcpy(&data_le, data, 8);
-  data_le = FromHost(data_le);
-  return std::string(reinterpret_cast<char*>(&data_le), 8);
-}
-
 std::string delim(const std::string& buf) {
-  return absl::StrCat(varint(buf.size()), buf);
+  return google::protobuf::conformance::LengthPrefixed(buf).str();
 }
-std::string u32(uint32_t u32) { return fixed32(&u32); }
-std::string u64(uint64_t u64) { return fixed64(&u64); }
-std::string flt(float f) { return fixed32(&f); }
-std::string dbl(double d) { return fixed64(&d); }
-std::string zz32(int32_t x) {
-  return varint(WireFormatLite::ZigZagEncode32(x));
+std::string u32(uint32_t u32) {
+  return google::protobuf::conformance::Fixed32(u32).str();
 }
-std::string zz64(int64_t x) {
-  return varint(WireFormatLite::ZigZagEncode64(x));
+std::string u64(uint64_t u64) {
+  return google::protobuf::conformance::Fixed64(u64).str();
 }
+std::string flt(float f) { return google::protobuf::conformance::Float(f).str(); }
+std::string dbl(double d) { return google::protobuf::conformance::Double(d).str(); }
+std::string zz32(int32_t x) { return google::protobuf::conformance::SInt32(x).str(); }
+std::string zz64(int64_t x) { return google::protobuf::conformance::SInt64(x).str(); }
 
 std::string tag(uint32_t fieldnum, char wire_type) {
-  return varint((fieldnum << 3) | wire_type);
+  return google::protobuf::conformance::Tag(
+             fieldnum, static_cast<google::protobuf::conformance::WireType>(wire_type))
+      .str();
 }
-
 std::string tag(int fieldnum, char wire_type) {
   return tag(static_cast<uint32_t>(fieldnum), wire_type);
 }
@@ -150,15 +107,15 @@ std::string field(uint32_t fieldnum, char wire_type, std::string content) {
   return absl::StrCat(tag(fieldnum, wire_type), content);
 }
 
-std::string group(uint32_t fieldnum, std::string content) {
-  return absl::StrCat(tag(fieldnum, WireFormatLite::WIRETYPE_START_GROUP),
-                      content,
-                      tag(fieldnum, WireFormatLite::WIRETYPE_END_GROUP));
+std::string group(uint32_t fieldnum, absl::string_view content) {
+  return google::protobuf::conformance::DelimitedField(fieldnum,
+                                             google::protobuf::conformance::Wire(content))
+      .str();
 }
 
 std::string len(uint32_t fieldnum, std::string content) {
-  return absl::StrCat(tag(fieldnum, WireFormatLite::WIRETYPE_LENGTH_DELIMITED),
-                      delim(content));
+  return google::protobuf::conformance::LengthPrefixedField(fieldnum, std::move(content))
+      .str();
 }
 
 std::string GetDefaultValue(FieldDescriptor::Type type) {
@@ -302,19 +259,22 @@ bool BinaryAndJsonConformanceSuite::ParseResponse(
   const std::string& test_name = setting.GetTestName();
   ConformanceLevel level = setting.GetLevel();
 
+  TestStatus test;
+  test.set_name(test_name);
   switch (response.result_case()) {
     case ConformanceResponse::kProtobufPayload: {
-      if (requested_output != conformance::PROTOBUF) {
-        ReportFailure(test_name, level, request, response,
-                      absl::StrCat("Test was asked for ",
-                                   WireFormatToString(requested_output),
-                                   " output but provided PROTOBUF instead."));
+      if (requested_output != ::conformance::PROTOBUF) {
+        test.set_failure_message(absl::StrCat(
+            "Test was asked for ", WireFormatToString(requested_output),
+            " output but provided PROTOBUF instead."));
+        ReportFailure(test, level, request, response);
         return false;
       }
 
       if (!test_message->ParseFromString(response.protobuf_payload())) {
-        ReportFailure(test_name, level, request, response,
-                      "Protobuf output we received from test was unparseable.");
+        test.set_failure_message(
+            "Protobuf output we received from test was unparseable.");
+        ReportFailure(test, level, request, response);
         return false;
       }
 
@@ -322,17 +282,18 @@ bool BinaryAndJsonConformanceSuite::ParseResponse(
     }
 
     case ConformanceResponse::kJsonPayload: {
-      if (requested_output != conformance::JSON) {
-        ReportFailure(test_name, level, request, response,
-                      absl::StrCat("Test was asked for ",
-                                   WireFormatToString(requested_output),
-                                   " output but provided JSON instead."));
+      if (requested_output != ::conformance::JSON) {
+        test.set_failure_message(absl::StrCat(
+            "Test was asked for ", WireFormatToString(requested_output),
+            " output but provided JSON instead."));
+        ReportFailure(test, level, request, response);
         return false;
       }
 
       if (!ParseJsonResponse(response, test_message)) {
-        ReportFailure(test_name, level, request, response,
-                      "JSON output we received from test was unparseable.");
+        test.set_failure_message(
+            "JSON output we received from test was unparseable.");
+        ReportFailure(test, level, request, response);
         return false;
       }
 
@@ -356,6 +317,9 @@ void BinaryAndJsonConformanceSuite::RunSuiteImpl() {
       this, /*run_proto3_tests=*/true);
   BinaryAndJsonConformanceSuiteImpl<TestAllTypesProto2>(
       this, /*run_proto3_tests=*/false);
+  if (!this->performance_) {
+    RunMessageSetTests();
+  }
   if (maximum_edition_ >= Edition::EDITION_2023) {
     BinaryAndJsonConformanceSuiteImpl<TestAllTypesProto3Editions>(
         this, /*run_proto3_tests=*/true);
@@ -419,6 +383,92 @@ void BinaryAndJsonConformanceSuite::RunDelimitedFieldTests() {
       R"pb([protobuf_test_messages.editions.delimited_ext] { c: 99 })pb");
 }
 
+void BinaryAndJsonConformanceSuite::RunMessageSetTests() {
+  RunValidBinaryProtobufTest<TestAllTypesProto2>(
+      absl::StrCat("ValidMessageSetEncoding"), REQUIRED,
+      len(500,
+          group(1, absl::StrCat(field(2, WireFormatLite::WIRETYPE_VARINT,
+                                      varint(4135312)),
+                                len(3, field(9, WireFormatLite::WIRETYPE_VARINT,
+                                             varint(99)))))),
+      // clang-format off
+      R"pb(message_set_correct: {
+             [protobuf_test_messages.proto2
+                  .TestAllTypesProto2.MessageSetCorrectExtension2]: { i: 99 }
+           })pb"
+      // clang-format on
+  );
+  RunValidBinaryProtobufTest<TestAllTypesProto2>(
+      absl::StrCat("ValidMessageSetEncoding.OutOfOrderGroupsEntries"), REQUIRED,
+      len(500,
+          group(1, absl::StrCat(len(3, field(9, WireFormatLite::WIRETYPE_VARINT,
+                                             varint(99))),
+                                field(2, WireFormatLite::WIRETYPE_VARINT,
+                                      varint(4135312))))),
+      // clang-format off
+      R"pb(message_set_correct: {
+             [protobuf_test_messages.proto2
+                  .TestAllTypesProto2.MessageSetCorrectExtension2]: { i: 99 }
+           })pb"
+      // clang-format on
+  );
+
+  // Test that an unknown message set extension always goes to unknown fields.
+  // This is done by poisoning the extension payload with an entry for field 0.
+  RunValidRoundtripProtobufTest<TestAllTypesProto2>(
+      "MessageSetEncoding.UnknownExtension", REQUIRED,
+      len(500,
+          group(1, absl::StrCat(field(2, WireFormatLite::WIRETYPE_VARINT,
+                                      varint(4135300)),
+                                len(3, field(0, WireFormatLite::WIRETYPE_VARINT,
+                                             varint(99)))))));
+
+  // If an encoder is unaware of the message_set_wire_format option it will be
+  // encoded like any other extension submessage. Decoders should be able to
+  // tolerate this format as well.
+  RunValidBinaryProtobufTest<TestAllTypesProto2>(
+      absl::StrCat("ValidMessageSetEncoding.SubmessageEncoding"), RECOMMENDED,
+      len(500,
+          len(4135312, field(9, WireFormatLite::WIRETYPE_VARINT, varint(99)))),
+      // clang-format off
+      R"pb(message_set_correct: {
+             [protobuf_test_messages.proto2
+                  .TestAllTypesProto2.MessageSetCorrectExtension2]: { i: 99 }
+           })pb"
+      // clang-format on
+  );
+
+  // Test again, but this time we'll try to detect if the implementation put the
+  // submessage encoded entry into the unknown field set. We'll do this by using
+  // conflicting oneof entries where order matters when the messages are merged.
+  //
+  // In a non-compliant implementation submessage encoded messageset entry will
+  // be moved to unknown fields and then tacked onto the end of the payload.
+  // Thus we'll see field b set first, and then field a.
+  //
+  // In a compliant implementation we expect the submessage encoded messageset
+  // to be read first with field a set, and then the normal message set entry
+  // will be read with field b will be set -- thus field b will win.
+  RunValidBinaryProtobufTest<TestAllTypesProto2>(
+      absl::StrCat("ValidMessageSetEncoding.SubmessageEncoding.NotUnknown"),
+      RECOMMENDED,
+      len(500, absl::StrCat(
+                   len(123456789,
+                       field(1, WireFormatLite::WIRETYPE_VARINT, varint(42))),
+                   group(1, absl::StrCat(
+                                field(2, WireFormatLite::WIRETYPE_VARINT,
+                                      varint(123456789)),
+                                len(3, field(2, WireFormatLite::WIRETYPE_VARINT,
+                                             varint(99))))))),
+      // clang-format off
+      R"pb(message_set_correct: {
+             [protobuf_test_messages.proto2
+                  .TestAllTypesProto2.ExtensionWithOneof]: { b: 99 }
+           })pb"
+      // clang-format on
+  );
+}
+
 template <typename MessageType>
 void BinaryAndJsonConformanceSuiteImpl<MessageType>::
     ExpectParseFailureForProtoWithProtoVersion(const std::string& proto,
@@ -428,8 +478,8 @@ void BinaryAndJsonConformanceSuiteImpl<MessageType>::
   // We don't expect output, but if the program erroneously accepts the protobuf
   // we let it send its response as this.  We must not leave it unspecified.
   ConformanceRequestSetting setting(
-      level, conformance::PROTOBUF, conformance::PROTOBUF,
-      conformance::BINARY_TEST, prototype, test_name, proto);
+      level, ::conformance::PROTOBUF, ::conformance::PROTOBUF,
+      ::conformance::BINARY_TEST, prototype, test_name, proto);
 
   const ConformanceRequest& request = setting.GetRequest();
   ConformanceResponse response;
@@ -437,14 +487,19 @@ void BinaryAndJsonConformanceSuiteImpl<MessageType>::
       absl::StrCat(setting.ConformanceLevelToString(level), ".",
                    setting.GetSyntaxIdentifier(), ".ProtobufInput.", test_name);
 
-  suite_.RunTest(effective_test_name, request, &response);
+  if (!suite_.RunTest(effective_test_name, request, &response)) {
+    return;
+  }
+
+  TestStatus test;
+  test.set_name(effective_test_name);
   if (response.result_case() == ConformanceResponse::kParseError) {
-    suite_.ReportSuccess(effective_test_name);
+    suite_.ReportSuccess(test);
   } else if (response.result_case() == ConformanceResponse::kSkipped) {
-    suite_.ReportSkip(effective_test_name, request, response);
+    suite_.ReportSkip(test, request, response);
   } else {
-    suite_.ReportFailure(effective_test_name, level, request, response,
-                         "Should have failed to parse, but didn't.");
+    test.set_failure_message("Should have failed to parse, but didn't.");
+    suite_.ReportFailure(test, level, request, response);
   }
 }
 
@@ -486,12 +541,12 @@ void BinaryAndJsonConformanceSuiteImpl<MessageType>::
                                 const std::string& equivalent_text_format,
                                 const Message& prototype) {
   ConformanceRequestSetting setting1(
-      level, conformance::JSON, conformance::PROTOBUF, conformance::JSON_TEST,
-      prototype, test_name, input_json);
+      level, ::conformance::JSON, ::conformance::PROTOBUF,
+      ::conformance::JSON_TEST, prototype, test_name, input_json);
   suite_.RunValidInputTest(setting1, equivalent_text_format);
-  ConformanceRequestSetting setting2(level, conformance::JSON,
-                                     conformance::JSON, conformance::JSON_TEST,
-                                     prototype, test_name, input_json);
+  ConformanceRequestSetting setting2(
+      level, ::conformance::JSON, ::conformance::JSON, ::conformance::JSON_TEST,
+      prototype, test_name, input_json);
   suite_.RunValidInputTest(setting2, equivalent_text_format);
 }
 
@@ -501,8 +556,8 @@ void BinaryAndJsonConformanceSuiteImpl<MessageType>::
         const std::string& test_name, ConformanceLevel level,
         const MessageType& input, const std::string& equivalent_text_format) {
   ConformanceRequestSetting setting(
-      level, conformance::PROTOBUF, conformance::JSON, conformance::JSON_TEST,
-      input, test_name, input.SerializeAsString());
+      level, ::conformance::PROTOBUF, ::conformance::JSON,
+      ::conformance::JSON_TEST, input, test_name, input.SerializeAsString());
   suite_.RunValidInputTest(setting, equivalent_text_format);
 }
 
@@ -514,8 +569,8 @@ void BinaryAndJsonConformanceSuiteImpl<MessageType>::
                                   const std::string& equivalent_text_format) {
   MessageType prototype;
   ConformanceRequestSetting setting(
-      level, conformance::JSON, conformance::PROTOBUF,
-      conformance::JSON_IGNORE_UNKNOWN_PARSING_TEST, prototype, test_name,
+      level, ::conformance::JSON, ::conformance::PROTOBUF,
+      ::conformance::JSON_IGNORE_UNKNOWN_PARSING_TEST, prototype, test_name,
       input_json);
   suite_.RunValidInputTest(setting, equivalent_text_format);
 }
@@ -528,9 +583,21 @@ void BinaryAndJsonConformanceSuite::RunValidBinaryProtobufTest(
   MessageType prototype;
 
   ConformanceRequestSetting binary_to_binary(
-      level, conformance::PROTOBUF, conformance::PROTOBUF,
-      conformance::BINARY_TEST, prototype, test_name, input_protobuf);
+      level, ::conformance::PROTOBUF, ::conformance::PROTOBUF,
+      ::conformance::BINARY_TEST, prototype, test_name, input_protobuf);
   RunValidInputTest(binary_to_binary, equivalent_text_format);
+}
+
+template <typename MessageType>
+void BinaryAndJsonConformanceSuite::RunValidRoundtripProtobufTest(
+    const std::string& test_name, ConformanceLevel level,
+    const std::string& input_protobuf) {
+  MessageType prototype;
+
+  ConformanceRequestSetting binary_to_binary(
+      level, ::conformance::PROTOBUF, ::conformance::PROTOBUF,
+      ::conformance::BINARY_TEST, prototype, test_name, input_protobuf);
+  RunValidBinaryInputTest(binary_to_binary, input_protobuf);
 }
 
 template <typename MessageType>
@@ -541,13 +608,13 @@ void BinaryAndJsonConformanceSuite::RunValidProtobufTest(
   MessageType prototype;
 
   ConformanceRequestSetting binary_to_binary(
-      level, conformance::PROTOBUF, conformance::PROTOBUF,
-      conformance::BINARY_TEST, prototype, test_name, input_protobuf);
+      level, ::conformance::PROTOBUF, ::conformance::PROTOBUF,
+      ::conformance::BINARY_TEST, prototype, test_name, input_protobuf);
   RunValidInputTest(binary_to_binary, equivalent_text_format);
 
   ConformanceRequestSetting binary_to_json(
-      level, conformance::PROTOBUF, conformance::JSON, conformance::BINARY_TEST,
-      prototype, test_name, input_protobuf);
+      level, ::conformance::PROTOBUF, ::conformance::JSON,
+      ::conformance::BINARY_TEST, prototype, test_name, input_protobuf);
   RunValidInputTest(binary_to_json, equivalent_text_format);
 }
 
@@ -573,8 +640,8 @@ void BinaryAndJsonConformanceSuiteImpl<MessageType>::RunValidBinaryProtobufTest(
     const std::string& input_protobuf, const std::string& expected_protobuf) {
   MessageType prototype;
   ConformanceRequestSetting setting(
-      level, conformance::PROTOBUF, conformance::PROTOBUF,
-      conformance::BINARY_TEST, prototype, test_name, input_protobuf);
+      level, ::conformance::PROTOBUF, ::conformance::PROTOBUF,
+      ::conformance::BINARY_TEST, prototype, test_name, input_protobuf);
   suite_.RunValidBinaryInputTest(setting, expected_protobuf, true);
 }
 
@@ -622,43 +689,51 @@ void BinaryAndJsonConformanceSuiteImpl<
                                                 const std::string& input_json,
                                                 const Validator& validator) {
   MessageType prototype;
-  ConformanceRequestSetting setting(level, conformance::JSON, conformance::JSON,
-                                    conformance::JSON_TEST, prototype,
-                                    test_name, input_json);
+  ConformanceRequestSetting setting(
+      level, ::conformance::JSON, ::conformance::JSON, ::conformance::JSON_TEST,
+      prototype, test_name, input_json);
   const ConformanceRequest& request = setting.GetRequest();
   ConformanceResponse response;
   std::string effective_test_name = absl::StrCat(
       setting.ConformanceLevelToString(level), ".",
       setting.GetSyntaxIdentifier(), ".JsonInput.", test_name, ".Validator");
 
-  suite_.RunTest(effective_test_name, request, &response);
+  if (!suite_.RunTest(effective_test_name, request, &response)) {
+    return;
+  }
 
+  TestStatus test;
+  test.set_name(effective_test_name);
   if (response.result_case() == ConformanceResponse::kSkipped) {
-    suite_.ReportSkip(effective_test_name, request, response);
+    suite_.ReportSkip(test, request, response);
     return;
   }
 
   if (response.result_case() != ConformanceResponse::kJsonPayload) {
-    suite_.ReportFailure(effective_test_name, level, request, response,
-                         absl::StrCat("Expected JSON payload but got type ",
-                                      response.result_case()));
+    test.set_failure_message(absl::StrCat("Expected JSON payload but got type ",
+                                          response.result_case()));
+    suite_.ReportFailure(test, level, request, response);
     return;
   }
-  Json::Reader reader;
+  Json::CharReaderBuilder builder;
   Json::Value value;
-  if (!reader.parse(response.json_payload(), value)) {
-    suite_.ReportFailure(
-        effective_test_name, level, request, response,
-        absl::StrCat("JSON payload cannot be parsed as valid JSON: ",
-                     reader.getFormattedErrorMessages()));
+  Json::String err;
+  const std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
+  if (!reader->parse(
+          response.json_payload().c_str(),
+          response.json_payload().c_str() + response.json_payload().length(),
+          &value, &err)) {
+    test.set_failure_message(
+        absl::StrCat("JSON payload cannot be parsed as valid JSON: ", err));
+    suite_.ReportFailure(test, level, request, response);
     return;
   }
   if (!validator(value)) {
-    suite_.ReportFailure(effective_test_name, level, request, response,
-                         "JSON payload validation failed.");
+    test.set_failure_message("JSON payload validation failed.");
+    suite_.ReportFailure(test, level, request, response);
     return;
   }
-  suite_.ReportSuccess(effective_test_name);
+  suite_.ReportSuccess(test);
 }
 
 template <typename MessageType>
@@ -668,23 +743,28 @@ void BinaryAndJsonConformanceSuiteImpl<MessageType>::ExpectParseFailureForJson(
   MessageType prototype;
   // We don't expect output, but if the program erroneously accepts the protobuf
   // we let it send its response as this.  We must not leave it unspecified.
-  ConformanceRequestSetting setting(level, conformance::JSON, conformance::JSON,
-                                    conformance::JSON_TEST, prototype,
-                                    test_name, input_json);
+  ConformanceRequestSetting setting(
+      level, ::conformance::JSON, ::conformance::JSON, ::conformance::JSON_TEST,
+      prototype, test_name, input_json);
   const ConformanceRequest& request = setting.GetRequest();
   ConformanceResponse response;
   std::string effective_test_name =
       absl::StrCat(setting.ConformanceLevelToString(level), ".",
                    SyntaxIdentifier(), ".JsonInput.", test_name);
 
-  suite_.RunTest(effective_test_name, request, &response);
+  if (!suite_.RunTest(effective_test_name, request, &response)) {
+    return;
+  }
+
+  TestStatus test;
+  test.set_name(effective_test_name);
   if (response.result_case() == ConformanceResponse::kParseError) {
-    suite_.ReportSuccess(effective_test_name);
+    suite_.ReportSuccess(test);
   } else if (response.result_case() == ConformanceResponse::kSkipped) {
-    suite_.ReportSkip(effective_test_name, request, response);
+    suite_.ReportSkip(test, request, response);
   } else {
-    suite_.ReportFailure(effective_test_name, level, request, response,
-                         "Should have failed to parse, but didn't.");
+    test.set_failure_message("Should have failed to parse, but didn't.");
+    suite_.ReportFailure(test, level, request, response);
   }
 }
 
@@ -699,22 +779,28 @@ void BinaryAndJsonConformanceSuiteImpl<MessageType>::
 
   MessageType prototype;
   ConformanceRequestSetting setting(
-      level, conformance::PROTOBUF, conformance::JSON, conformance::JSON_TEST,
-      prototype, test_name, payload_message.SerializeAsString());
+      level, ::conformance::PROTOBUF, ::conformance::JSON,
+      ::conformance::JSON_TEST, prototype, test_name,
+      payload_message.SerializeAsString());
   const ConformanceRequest& request = setting.GetRequest();
   ConformanceResponse response;
   std::string effective_test_name =
       absl::StrCat(setting.ConformanceLevelToString(level), ".",
                    SyntaxIdentifier(), ".", test_name, ".JsonOutput");
 
-  suite_.RunTest(effective_test_name, request, &response);
+  if (!suite_.RunTest(effective_test_name, request, &response)) {
+    return;
+  }
+
+  TestStatus test;
+  test.set_name(effective_test_name);
   if (response.result_case() == ConformanceResponse::kSerializeError) {
-    suite_.ReportSuccess(effective_test_name);
+    suite_.ReportSuccess(test);
   } else if (response.result_case() == ConformanceResponse::kSkipped) {
-    suite_.ReportSkip(effective_test_name, request, response);
+    suite_.ReportSkip(test, request, response);
   } else {
-    suite_.ReportFailure(effective_test_name, level, request, response,
-                         "Should have failed to serialize, but didn't.");
+    test.set_failure_message("Should have failed to serialize, but didn't.");
+    suite_.ReportFailure(test, level, request, response);
   }
 }
 
@@ -1207,7 +1293,7 @@ void BinaryAndJsonConformanceSuiteImpl<MessageType>::TestValidDataForOneofType(
 
   {
     // Tests oneof with default value.
-    const std::string proto = default_value;
+    const std::string& proto = default_value;
     MessageType test_message;
     test_message.MergeFromString(proto);
     std::string text;
@@ -1223,7 +1309,7 @@ void BinaryAndJsonConformanceSuiteImpl<MessageType>::TestValidDataForOneofType(
 
   {
     // Tests oneof with non-default value.
-    const std::string proto = non_default_value;
+    const std::string& proto = non_default_value;
     MessageType test_message;
     test_message.MergeFromString(proto);
     std::string text;
@@ -1240,7 +1326,7 @@ void BinaryAndJsonConformanceSuiteImpl<MessageType>::TestValidDataForOneofType(
   {
     // Tests oneof with multiple values of the same field.
     const std::string proto = absl::StrCat(default_value, non_default_value);
-    const std::string expected_proto = non_default_value;
+    const std::string& expected_proto = non_default_value;
     MessageType test_message;
     test_message.MergeFromString(expected_proto);
     std::string text;
@@ -1266,7 +1352,7 @@ void BinaryAndJsonConformanceSuiteImpl<MessageType>::TestValidDataForOneofType(
                      GetDefaultValue(other_type));
 
     const std::string proto = absl::StrCat(other_value, non_default_value);
-    const std::string expected_proto = non_default_value;
+    const std::string& expected_proto = non_default_value;
     MessageType test_message;
     test_message.MergeFromString(expected_proto);
     std::string text;
@@ -1337,12 +1423,60 @@ void BinaryAndJsonConformanceSuiteImpl<MessageType>::TestIllegalTags() {
 }
 
 template <typename MessageType>
+void BinaryAndJsonConformanceSuiteImpl<MessageType>::TestUnmatchedGroup() {
+  ExpectParseFailureForProto(tag(201, WireFormatLite::WIRETYPE_END_GROUP),
+                             "UnmatchedEndGroup", REQUIRED);
+  ExpectParseFailureForProto(tag(1234, WireFormatLite::WIRETYPE_END_GROUP),
+                             "UnmatchedEndGroupUnknown", REQUIRED);
+  ExpectParseFailureForProto(tag(1, WireFormatLite::WIRETYPE_END_GROUP),
+                             "UnmatchedEndGroupWrongType", REQUIRED);
+  ExpectParseFailureForProto(
+      len(18, tag(1234, WireFormatLite::WIRETYPE_END_GROUP)),
+      "UnmatchedEndGroupNestedLen", REQUIRED);
+  ExpectParseFailureForProto(
+      group(201, tag(202, WireFormatLite::WIRETYPE_END_GROUP)),
+      "UnmatchedEndGroupNested", REQUIRED);
+  ExpectParseFailureForProto(
+      absl::StrCat(tag(1, WireFormatLite::WIRETYPE_END_GROUP),
+                   len(2, "hello world")),
+      "UnmatchedEndGroupWithData", REQUIRED);
+
+  ExpectParseFailureForProto(tag(201, WireFormatLite::WIRETYPE_START_GROUP),
+                             "UnmatchedStartGroup", REQUIRED);
+  ExpectParseFailureForProto(tag(1234, WireFormatLite::WIRETYPE_START_GROUP),
+                             "UnmatchedStartGroupUnknown", REQUIRED);
+  ExpectParseFailureForProto(tag(1, WireFormatLite::WIRETYPE_START_GROUP),
+                             "UnmatchedStartGroupWrongType", REQUIRED);
+  ExpectParseFailureForProto(
+      len(18, tag(1234, WireFormatLite::WIRETYPE_START_GROUP)),
+      "UnmatchedStartGroupNestedLen", REQUIRED);
+  ExpectParseFailureForProto(
+      group(201, tag(202, WireFormatLite::WIRETYPE_START_GROUP)),
+      "UnmatchedStartGroupNested", REQUIRED);
+  ExpectParseFailureForProto(
+      absl::StrCat(tag(1, WireFormatLite::WIRETYPE_START_GROUP),
+                   len(2, "hello world")),
+      "UnmatchedStartGroupWithData", REQUIRED);
+
+  ExpectParseFailureForProto(
+      absl::StrCat(tag(201, WireFormatLite::WIRETYPE_START_GROUP),
+                   len(2, "hello world"),
+                   tag(202, WireFormatLite::WIRETYPE_END_GROUP)),
+      "MismatchedGroupTags", REQUIRED);
+  ExpectParseFailureForProto(
+      group(201, absl::StrCat(tag(202, WireFormatLite::WIRETYPE_START_GROUP),
+                              len(2, "hello world"),
+                              tag(203, WireFormatLite::WIRETYPE_END_GROUP))),
+      "MismatchedNestedGroupTags", REQUIRED);
+}
+
+template <typename MessageType>
 void BinaryAndJsonConformanceSuiteImpl<MessageType>::TestUnknownWireType() {
   for (uint8_t type : {0x6, 0x7}) {
     for (uint8_t field = 0; field < 4; ++field) {
       for (uint8_t value = 0; value < 4; ++value) {
-        std::string name = absl::StrFormat("UnknownWireType%d_Field%d_Verion%d",
-                                           type, field, value);
+        std::string name = absl::StrFormat(
+            "UnknownWireType%d_Field%d_Version%d", type, field, value);
 
         char data[2];
         data[0] = (field << 3) | type;  // unknown wire type.
@@ -1416,16 +1550,22 @@ void BinaryAndJsonConformanceSuiteImpl<MessageType>::TestUnknownOrdering() {
   std::string serialized = message.SerializeAsString();
 
   ConformanceRequestSetting setting(
-      REQUIRED, conformance::PROTOBUF, conformance::PROTOBUF,
-      conformance::BINARY_TEST, prototype, "UnknownOrdering", serialized);
+      REQUIRED, ::conformance::PROTOBUF, ::conformance::PROTOBUF,
+      ::conformance::BINARY_TEST, prototype, "UnknownOrdering", serialized);
   const ConformanceRequest& request = setting.GetRequest();
   ConformanceResponse response;
-  suite_.RunTest(setting.GetTestName(), request, &response);
-  MessageType response_message;
-  if (response.result_case() == ConformanceResponse::kSkipped) {
-    suite_.ReportSkip(setting.GetTestName(), request, response);
+  if (!suite_.RunTest(setting.GetTestName(), request, &response)) {
     return;
   }
+
+  MessageType response_message;
+  TestStatus test;
+  test.set_name(setting.GetTestName());
+  if (response.result_case() == ConformanceResponse::kSkipped) {
+    suite_.ReportSkip(test, request, response);
+    return;
+  }
+
   suite_.ParseResponse(response, setting, &response_message);
 
   const UnknownFieldSet& ufs = response_message.unknown_fields();
@@ -1441,10 +1581,10 @@ void BinaryAndJsonConformanceSuiteImpl<MessageType>::TestUnknownOrdering() {
       ufs.field(1).varint() != 123 ||
       ufs.field(2).length_delimited() != "def" ||
       ufs.field(3).varint() != 456) {
-    suite_.ReportFailure(setting.GetTestName(), setting.GetLevel(), request,
-                         response, "Unknown field mismatch");
+    test.set_failure_message("Unknown field mismatch");
+    suite_.ReportFailure(test, setting.GetLevel(), request, response);
   } else {
-    suite_.ReportSuccess(setting.GetTestName());
+    suite_.ReportSuccess(test);
   }
 }
 
@@ -1517,7 +1657,7 @@ void BinaryAndJsonConformanceSuiteImpl<MessageType>::RunAllTests() {
     }
 
     TestIllegalTags();
-
+    TestUnmatchedGroup();
     TestUnknownWireType();
 
     int64_t kInt64Min = -9223372036854775808ULL;
@@ -1810,7 +1950,7 @@ void BinaryAndJsonConformanceSuiteImpl<MessageType>::
   const std::string type_name =
       UpperCase(absl::StrCat(".", FieldDescriptor::TypeName(type)));
   const FieldDescriptor* field = GetFieldForType(type, true, Packed::kFalse);
-  std::string field_name = field->name();
+  const absl::string_view field_name = field->name();
 
   std::string message_field =
       absl::StrCat("\"", field_name, "\": [", field_value, "]");
@@ -1841,8 +1981,6 @@ void BinaryAndJsonConformanceSuiteImpl<MessageType>::RunJsonTests() {
                    "{\"optionalString\":\"Hello, World!\"}",
                    "optional_string: 'Hello, World!'");
 
-  // NOTE: The spec for JSON support is still being sorted out, these may not
-  // all be correct.
   RunJsonTestsForFieldNameConvention();
   RunJsonTestsForNonRepeatedTypes();
   RunJsonTestsForRepeatedTypes();
@@ -1898,6 +2036,24 @@ void BinaryAndJsonConformanceSuiteImpl<
                                   return value.isMember(absl::StrCat(
                                       "[", extensions[0]->full_name(), "]"));
                                 });
+}
+
+template <typename MessageType>
+void BinaryAndJsonConformanceSuiteImpl<
+    MessageType>::RunJsonTestsForReservedFields() {
+  for (const auto& test_case : std::vector<std::pair<std::string, std::string>>{
+           {"Boolean", "true"},
+           {"Number", "1"},
+           {"String", "\"hello\""},
+           {"Message", R"json({ "a": 1 })json"},
+       }) {
+    ExpectParseFailureForJson(
+        absl::StrCat("RejectReservedFieldName.", test_case.first), REQUIRED,
+        absl::Substitute(R"json({
+          "reserved_field": $0
+        })json",
+                         test_case.second));
+  }
 }
 
 template <typename MessageType>
@@ -2131,17 +2287,17 @@ void BinaryAndJsonConformanceSuiteImpl<
   // Duplicated field names are not allowed.
   ExpectParseFailureForJson("FieldNameDuplicate", RECOMMENDED,
                             R"({
-        "optionalNestedMessage": {a: 1},
+        "optionalNestedMessage": {"a": 1},
         "optionalNestedMessage": {}
       })");
   ExpectParseFailureForJson("FieldNameDuplicateDifferentCasing1", RECOMMENDED,
                             R"({
-        "optional_nested_message": {a: 1},
+        "optional_nested_message": {"a": 1},
         "optionalNestedMessage": {}
       })");
   ExpectParseFailureForJson("FieldNameDuplicateDifferentCasing2", RECOMMENDED,
                             R"({
-        "optionalNestedMessage": {a: 1},
+        "optionalNestedMessage": {"a": 1},
         "optional_nested_message": {}
       })");
   // Serializers should use lowerCamelCase by default.
@@ -2253,6 +2409,10 @@ void BinaryAndJsonConformanceSuiteImpl<
   RunValidJsonTest("Int32FieldStringValueEscaped", REQUIRED,
                    R"({"optionalInt32": "2\u003147483647"})",
                    "optional_int32: 2147483647");
+  RunValidJsonTest("Int32FieldStringValueZero", REQUIRED,
+                   R"({"optionalInt32": "0"})", "optional_int32: 0");
+  RunValidJsonTest("Int32FieldQuotedExponentialValue", REQUIRED,
+                   R"({"optionalInt32": "1e5"})", "optional_int32: 100000");
 
   // Parsers reject out-of-bound integer values.
   ExpectParseFailureForJson("Int32FieldTooLarge", REQUIRED,
@@ -2267,7 +2427,8 @@ void BinaryAndJsonConformanceSuiteImpl<
                             R"({"optionalInt64": "-9223372036854775809"})");
   ExpectParseFailureForJson("Uint64FieldTooLarge", REQUIRED,
                             R"({"optionalUint64": "18446744073709551616"})");
-  // Parser reject non-integer numeric values as well.
+
+  // Parser reject non-integer numeric values.
   ExpectParseFailureForJson("Int32FieldNotInteger", REQUIRED,
                             R"({"optionalInt32": 0.5})");
   ExpectParseFailureForJson("Uint32FieldNotInteger", REQUIRED,
@@ -2276,6 +2437,22 @@ void BinaryAndJsonConformanceSuiteImpl<
                             R"({"optionalInt64": "0.5"})");
   ExpectParseFailureForJson("Uint64FieldNotInteger", REQUIRED,
                             R"({"optionalUint64": "0.5"})");
+
+  // Parser reject non-numeric string values.
+  ExpectParseFailureForJson("Int32FieldStringValuePartiallyNumeric", REQUIRED,
+                            R"({"optionalInt32": "12abc"})");
+  ExpectParseFailureForJson("Int32FieldStringValueNonNumeric", REQUIRED,
+                            R"({"optionalInt32": "abc"})");
+
+  // Parser reject empty string values.
+  ExpectParseFailureForJson("Int32FieldEmptyString", REQUIRED,
+                            R"({"optionalInt32": ""})");
+  ExpectParseFailureForJson("Uint32FieldEmptyString", REQUIRED,
+                            R"({"optionalUint32": ""})");
+  ExpectParseFailureForJson("Int64FieldEmptyString", REQUIRED,
+                            R"({"optionalInt64": ""})");
+  ExpectParseFailureForJson("Uint64FieldEmptyString", REQUIRED,
+                            R"({"optionalUint64": ""})");
 
   // Integers but represented as float values are accepted.
   RunValidJsonTest("Int32FieldFloatTrailingZero", REQUIRED,
@@ -2371,6 +2548,9 @@ void BinaryAndJsonConformanceSuiteImpl<
   // Values can be quoted.
   RunValidJsonTest("FloatFieldQuotedValue", REQUIRED,
                    R"({"optionalFloat": "1"})", "optional_float: 1");
+  RunValidJsonTest("FloatFieldQuotedExponentialValue", REQUIRED,
+                   R"({"optionalFloat": "1.175494e-38"})",
+                   "optional_float: 1.175494e-38");
   // Special values.
   RunValidJsonTest("FloatFieldNan", REQUIRED, R"({"optionalFloat": "NaN"})",
                    "optional_float: nan");
@@ -2400,11 +2580,22 @@ void BinaryAndJsonConformanceSuiteImpl<
                             R"({"optionalFloat": Infinity})");
   ExpectParseFailureForJson("FloatFieldNegativeInfinityNotQuoted", RECOMMENDED,
                             R"({"optionalFloat": -Infinity})");
+
   // Parsers should reject out-of-bound values.
   ExpectParseFailureForJson("FloatFieldTooSmall", REQUIRED,
                             R"({"optionalFloat": -3.502823e+38})");
   ExpectParseFailureForJson("FloatFieldTooLarge", REQUIRED,
                             R"({"optionalFloat": 3.502823e+38})");
+
+  // Parsers should reject empty string values.
+  ExpectParseFailureForJson("FloatFieldEmptyString", REQUIRED,
+                            R"({"optionalFloat": ""})");
+
+  // Parser reject non-numeric string values.
+  ExpectParseFailureForJson("FloatFieldStringValuePartiallyNumeric", REQUIRED,
+                            R"({"optionalFloat": "12abc"})");
+  ExpectParseFailureForJson("FloatFieldStringValueNonNumeric", REQUIRED,
+                            R"({"optionalFloat": "abc"})");
 
   // Double fields.
   RunValidJsonTest("DoubleFieldMinPositiveValue", REQUIRED,
@@ -2422,6 +2613,9 @@ void BinaryAndJsonConformanceSuiteImpl<
   // Values can be quoted.
   RunValidJsonTest("DoubleFieldQuotedValue", REQUIRED,
                    R"({"optionalDouble": "1"})", "optional_double: 1");
+  RunValidJsonTest("DoubleFieldQuotedExponentialValue", REQUIRED,
+                   R"({"optionalDouble": "2.22507e-308"})",
+                   "optional_double: 2.22507e-308");
   // Special values.
   RunValidJsonTest("DoubleFieldNan", REQUIRED, R"({"optionalDouble": "NaN"})",
                    "optional_double: nan");
@@ -2456,7 +2650,17 @@ void BinaryAndJsonConformanceSuiteImpl<
   ExpectParseFailureForJson("DoubleFieldTooSmall", REQUIRED,
                             R"({"optionalDouble": -1.89769e+308})");
   ExpectParseFailureForJson("DoubleFieldTooLarge", REQUIRED,
-                            R"({"optionalDouble": +1.89769e+308})");
+                            R"({"optionalDouble": 1.89769e+308})");
+
+  // Parsers should reject empty string values.
+  ExpectParseFailureForJson("DoubleFieldEmptyString", REQUIRED,
+                            R"({"optionalDouble": ""})");
+
+  // Parser reject non-numeric string values.
+  ExpectParseFailureForJson("DoubleFieldStringValuePartiallyNumeric", REQUIRED,
+                            R"({"optionalDouble": "12abc"})");
+  ExpectParseFailureForJson("DoubleFieldStringValueNonNumeric", REQUIRED,
+                            R"({"optionalDouble": "abc"})");
 
   // Enum fields.
   RunValidJsonTest("EnumField", REQUIRED, R"({"optionalNestedEnum": "FOO"})",
@@ -2696,6 +2900,14 @@ void BinaryAndJsonConformanceSuiteImpl<
   ExpectParseFailureForJson(
       "RepeatedFieldWrongElementTypeExpectingMessagesGotString", REQUIRED,
       R"({"repeatedNestedMessage": [{"a": 1}, "2"]})");
+
+  // A singular field where a repeated field was expected is not allowed, even
+  // if it is the right type.
+  ExpectParseFailureForJson("SingleValueForRepeatedFieldInt32", REQUIRED,
+                            R"({"repeatedInt32": 1})");
+  ExpectParseFailureForJson("SingleValueForRepeatedFieldMessage", REQUIRED,
+                            R"({"repeatedNestedMessage": {"a": 1}})");
+
   // Trailing comma in the repeated field is not allowed.
   ExpectParseFailureForJson("RepeatedFieldTrailingComma", RECOMMENDED,
                             R"({"repeatedInt32": [1, 2, 3, 4,]})");
@@ -2922,6 +3134,18 @@ void BinaryAndJsonConformanceSuiteImpl<
       "DurationProtoInputTooLarge", REQUIRED,
       "optional_duration: {seconds: 315576000001 nanos: 0}");
 
+  ExpectSerializeFailureForJson("DurationProtoNanosWrongSign", REQUIRED,
+                                "optional_duration: {seconds: 1 nanos: -1}");
+  ExpectSerializeFailureForJson("DurationProtoNanosWrongSignNegativeSecs",
+                                REQUIRED,
+                                "optional_duration: {seconds: -1 nanos: 1}");
+  ExpectSerializeFailureForJson(
+      "DurationProtoNanosTooSmall", REQUIRED,
+      "optional_duration: {seconds: -1 nanos: -1000000000}");
+  ExpectSerializeFailureForJson(
+      "DurationProtoNanosTooLarge", REQUIRED,
+      "optional_duration: {seconds: 1 nanos: 1000000000}");
+
   RunValidJsonTestWithValidator(
       "DurationHasZeroFractionalDigit", RECOMMENDED,
       R"({"optionalDuration": "1.000000000s"})", [](const Json::Value& value) {
@@ -2961,6 +3185,27 @@ void BinaryAndJsonConformanceSuiteImpl<
       })",
       "repeated_timestamp: {seconds: -62135596800}"
       "repeated_timestamp: {seconds: 253402300799 nanos: 999999999}");
+  RunValidJsonTest("TimestampEpochValue", REQUIRED,
+                   R"({"optionalTimestamp": "1970-01-01T00:00:00.000Z"})",
+                   "optional_timestamp: {seconds: 0}");
+  RunValidJsonTest("TimestampNanoAfterEpochlValue", REQUIRED,
+                   R"({"optionalTimestamp": "1970-01-01T00:00:00.000000001Z"})",
+                   "optional_timestamp: {seconds: 0 nanos: 1}");
+  RunValidJsonTest("TimestampNanoBeforeEpochValue", REQUIRED,
+                   R"({"optionalTimestamp": "1969-12-31T23:59:59.999999999Z"})",
+                   "optional_timestamp: {seconds: -1 nanos: 999999999}");
+  RunValidJsonTest("TimestampLittleAfterEpochlValue", REQUIRED,
+                   R"({"optionalTimestamp": "1970-01-01T00:00:01.000000001Z"})",
+                   "optional_timestamp: {seconds: 1 nanos: 1}");
+  RunValidJsonTest("TimestampLittleBeforeEpochValue", REQUIRED,
+                   R"({"optionalTimestamp": "1969-12-31T23:59:58.999999999Z"})",
+                   "optional_timestamp: {seconds: -2 nanos: 999999999}");
+  RunValidJsonTest("TimestampTenAndHalfSecondsAfterEpochValue", REQUIRED,
+                   R"({"optionalTimestamp": "1970-01-01T00:00:10.500Z"})",
+                   "optional_timestamp: {seconds: 10 nanos: 500000000}");
+  RunValidJsonTest("TimestampTenAndHalfSecondsBeforeEpochValue", REQUIRED,
+                   R"({"optionalTimestamp": "1969-12-31T23:59:49.500Z"})",
+                   "optional_timestamp: {seconds: -11 nanos: 500000000}");
   RunValidJsonTest("TimestampLeap", REQUIRED,
                    R"({"optionalTimestamp": "1993-02-10T00:00:00.000Z"})",
                    "optional_timestamp: {seconds: 729302400}");
@@ -2986,10 +3231,19 @@ void BinaryAndJsonConformanceSuiteImpl<
                             R"({"optionalTimestamp": "0001-01-01T00:00:00z"})");
   ExpectParseFailureForJson("TimestampJsonInputLowercaseT", REQUIRED,
                             R"({"optionalTimestamp": "0001-01-01t00:00:00Z"})");
+  ExpectParseFailureForJson(
+      "TimestampWithMissingColonInOffset", REQUIRED,
+      R"({"optionalTimestamp": "1970-01-01T08:00:01+0800"})");
   ExpectSerializeFailureForJson("TimestampProtoInputTooSmall", REQUIRED,
                                 "optional_timestamp: {seconds: -62135596801}");
   ExpectSerializeFailureForJson("TimestampProtoInputTooLarge", REQUIRED,
                                 "optional_timestamp: {seconds: 253402300800}");
+  ExpectSerializeFailureForJson(
+      "TimestampProtoNegativeNanos", REQUIRED,
+      "optional_timestamp: {seconds: 5000 nanos: -1}");
+  ExpectSerializeFailureForJson(
+      "TimestampProtoNanoTooLarge", REQUIRED,
+      "optional_timestamp: {seconds: 5000 nanos: 1000000000}");
   RunValidJsonTestWithValidator(
       "TimestampZeroNormalized", RECOMMENDED,
       R"({"optionalTimestamp": "1969-12-31T16:00:00-08:00"})",
@@ -3392,6 +3646,40 @@ void BinaryAndJsonConformanceSuiteImpl<MessageType>::RunJsonTestsForAny() {
     }
   }
       )");
+  // When the Any is in WKT form (with "@type"), the type_url must be present
+  // and URL shaped, otherwise it should be a parse error (because it can't be
+  // parsed into the Any schema).
+  ExpectParseFailureForJson("AnyWktRepresentationWithEmptyTypeAndValue",
+                            REQUIRED,
+                            R"({
+        "optionalAny": {
+          "@type": "",
+          "value": ""
+        }
+      })");
+  ExpectParseFailureForJson("AnyWktRepresentationWithBadType", REQUIRED,
+                            R"({
+        "optionalAny": {
+          "@type": "not_a_url",
+          "value": ""
+        }
+      })");
+  // When the Any can be parsed as non-WKT form, the type_url could be missing
+  // or invalid, since that can still be parsed into the Any schema.
+  RunValidJsonTest("AnyWithNoType", REQUIRED,
+                   R"({
+        "optionalAny": {}
+      })",
+                   R"(
+        optional_any: {}
+      )");
+  // `null` where an Any exists should just result in the field being unset.
+  RunValidJsonTest("AnyNull", REQUIRED,
+                   R"({
+        "optionalAny": null
+      })",
+                   R"(
+      )");
 }
 
 template <typename MessageType>
@@ -3470,12 +3758,11 @@ BinaryAndJsonConformanceSuiteImpl<MessageType>::GetFieldForOneofType(
 template <typename MessageType>
 std::string BinaryAndJsonConformanceSuiteImpl<MessageType>::SyntaxIdentifier()
     const {
-  if constexpr (std::is_same<MessageType, TestAllTypesProto2>::value) {
+  if (std::is_same<MessageType, TestAllTypesProto2>::value) {
     return "Proto2";
-  } else if constexpr (std::is_same<MessageType, TestAllTypesProto3>::value) {
+  } else if (std::is_same<MessageType, TestAllTypesProto3>::value) {
     return "Proto3";
-  } else if constexpr (std::is_same<MessageType,
-                                    TestAllTypesProto2Editions>::value) {
+  } else if (std::is_same<MessageType, TestAllTypesProto2Editions>::value) {
     return "Editions_Proto2";
   } else {
     return "Editions_Proto3";

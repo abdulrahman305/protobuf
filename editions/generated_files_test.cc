@@ -12,6 +12,7 @@
 #include "editions/golden/test_messages_proto2_editions.pb.h"
 #include "editions/golden/test_messages_proto3_editions.pb.h"
 #include "editions/proto/test_editions_default_features.pb.h"
+#include "google/protobuf/internal_feature_helper.h"
 #include "google/protobuf/test_textproto.h"
 
 // These tests provide some basic minimal coverage that protos work as expected.
@@ -146,7 +147,13 @@ TEST(Generated, EditionDefaults2023InternalFeatures) {
                 utf8_validation: VERIFY
                 message_encoding: LENGTH_PREFIXED
                 json_format: ALLOW
-                [pb.cpp] { legacy_closed_enum: false string_type: STRING }
+                enforce_naming_style: STYLE_LEGACY
+                default_symbol_visibility: EXPORT_ALL
+                [pb.cpp] {
+                  legacy_closed_enum: false
+                  string_type: STRING
+                  enum_name_uses_string_view: false
+                }
               )pb"));
 }
 

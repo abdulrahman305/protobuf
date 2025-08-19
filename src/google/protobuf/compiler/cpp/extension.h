@@ -15,6 +15,7 @@
 #include <string>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/strings/string_view.h"
 #include "google/protobuf/compiler/cpp/helpers.h"
 #include "google/protobuf/compiler/cpp/options.h"
 #include "google/protobuf/port.h"
@@ -90,4 +91,4 @@ class PROTOC_EXPORT ExtensionGenerator {
 
 #include "google/protobuf/port_undef.inc"
 
-#endif  // GOOGLE_PROTOBUF_COMPILER_CPP_MESSAGE_H__
+#endif  // GOOGLE_PROTOBUF_COMPILER_CPP_EXTENSION_H__

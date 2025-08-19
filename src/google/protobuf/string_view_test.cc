@@ -12,11 +12,14 @@
 #include "google/protobuf/text_format.h"
 #include "google/protobuf/unittest_string_view.pb.h"
 
+// Must be included last.
+#include "google/protobuf/port_def.inc"
+
 namespace google {
 namespace protobuf {
 namespace {
 
-using ::protobuf_unittest::TestStringView;
+using ::proto2_unittest::TestStringView;
 using ::testing::ElementsAre;
 using ::testing::StrEq;
 
@@ -284,10 +287,12 @@ TEST(StringViewFieldTest, RepeatedSetAndGetByReflection) {
   }
 
   // MutableRepeatedPtrField().
+  PROTOBUF_IGNORE_DEPRECATION_START;
   for (auto& it :
        *reflection->MutableRepeatedPtrField<std::string>(&message, field)) {
     it.append(it);
   }
+  PROTOBUF_IGNORE_DEPRECATION_STOP;
   {
     const auto& rep_str =
         reflection->GetRepeatedFieldRef<std::string>(message, field);
@@ -306,6 +311,15 @@ TEST(StringViewFieldTest, RepeatedSetAndGetByReflection) {
               StrEq("222222222222"));
 }
 
+TEST(StringViewFieldTest, MergeAndClearEmptyImplicitPresence) {
+  TestStringView message, other;
+  other.set_implicit_presence("");
+  message.MergeFrom(other);
+  message.Clear();
+}
+
 }  // namespace
 }  // namespace protobuf
 }  // namespace google
+
+#include "google/protobuf/port_undef.inc"

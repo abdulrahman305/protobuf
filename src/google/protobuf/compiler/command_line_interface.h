@@ -233,6 +233,9 @@ class PROTOC_EXPORT CommandLineInterface {
       Edition minimum_edition, Edition maximum_edition,
       const std::vector<const FileDescriptor*>& parsed_files) const;
 
+  bool EnforceProtocEditionsSupport(
+      const std::vector<const FileDescriptor*>& parsed_files) const;
+
 
   // Return status for ParseArguments() and InterpretArgument().
   enum ParseArgumentStatus {
@@ -419,6 +422,16 @@ class PROTOC_EXPORT CommandLineInterface {
   // If there's a violation of depend-on-what-you-import, this string will be
   // presented to the user. "%s" will be replaced with the violating import.
   std::string direct_dependencies_violation_msg_;
+
+  // Names of proto files which are allowed to be option imported. Used by build
+  // systems to enforce option-depend-on-what-you-option-import.
+  absl::flat_hash_set<std::string> option_dependencies_;
+  bool option_dependencies_explicitly_set_ = false;
+
+  // If there's a violation of option-depend-on-what-you-option-import, this
+  // string will be presented to the user. "%s" will be replaced with the
+  // violating import.
+  std::string option_dependencies_violation_msg_;
 
   // output_directives_ lists all the files we are supposed to output and what
   // generator to use for each.

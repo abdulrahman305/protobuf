@@ -21,7 +21,10 @@
 #include <atomic>
 #include <climits>
 #include <cstddef>
+#include <cstdint>
+#include <initializer_list>
 #include <memory>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -30,6 +33,7 @@
 #include "google/protobuf/stubs/common.h"
 #include "absl/base/call_once.h"
 #include "absl/base/casts.h"
+#include "absl/base/optimization.h"
 #include "absl/strings/string_view.h"
 #include "google/protobuf/any.h"
 #include "google/protobuf/has_bits.h"
@@ -67,7 +71,7 @@ namespace internal {
 PROTOBUF_EXPORT extern std::atomic<bool> init_protobuf_defaults_state;
 PROTOBUF_EXPORT void InitProtobufDefaultsSlow();
 PROTOBUF_EXPORT inline void InitProtobufDefaults() {
-  if (PROTOBUF_PREDICT_FALSE(
+  if (ABSL_PREDICT_FALSE(
           !init_protobuf_defaults_state.load(std::memory_order_acquire))) {
     InitProtobufDefaultsSlow();
   }
@@ -337,15 +341,15 @@ struct BytesTag {
 // This overload set is used to implement `set_xxx()` methods for repeated
 // string fields in generated code.
 inline void AssignToString(std::string& dest, const std::string& value,
-                           BytesTag tag = BytesTag{}) {
+                           BytesTag /*tag*/ = BytesTag{}) {
   dest.assign(value);
 }
 inline void AssignToString(std::string& dest, std::string&& value,
-                           BytesTag tag = BytesTag{}) {
+                           BytesTag /*tag*/ = BytesTag{}) {
   dest.assign(std::move(value));
 }
 inline void AssignToString(std::string& dest, const char* value,
-                           BytesTag tag = BytesTag{}) {
+                           BytesTag /*tag*/ = BytesTag{}) {
   dest.assign(value);
 }
 inline void AssignToString(std::string& dest, const char* value,
@@ -353,11 +357,11 @@ inline void AssignToString(std::string& dest, const char* value,
   dest.assign(value, size);
 }
 inline void AssignToString(std::string& dest, const void* value,
-                           std::size_t size, BytesTag tag) {
+                           std::size_t size, BytesTag /*tag*/) {
   dest.assign(reinterpret_cast<const char*>(value), size);
 }
 inline void AssignToString(std::string& dest, absl::string_view value,
-                           BytesTag tag = BytesTag{}) {
+                           BytesTag /*tag*/ = BytesTag{}) {
   dest.assign(value.data(), value.size());
 }
 
@@ -371,8 +375,21 @@ void AddToRepeatedPtrField(google::protobuf::RepeatedPtrField<std::string>& dest
 }
 inline void AddToRepeatedPtrField(google::protobuf::RepeatedPtrField<std::string>& dest,
                                   std::string&& value,
-                                  BytesTag tag = BytesTag{}) {
+                                  BytesTag /*tag*/ = BytesTag{}) {
   dest.Add(std::move(value));
+}
+
+constexpr std::optional<uintptr_t> EncodePlacementArenaOffsets(
+    std::initializer_list<size_t> offsets) {
+  uintptr_t arena_bits = 0;
+  for (size_t offset : offsets) {
+    offset /= sizeof(Arena*);
+    if (offset >= sizeof(arena_bits) * 8) {
+      return std::nullopt;
+    }
+    arena_bits |= uintptr_t{1} << offset;
+  }
+  return arena_bits;
 }
 
 }  // namespace internal

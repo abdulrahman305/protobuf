@@ -14,11 +14,14 @@
 #include "google/protobuf/descriptor_database.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <memory>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "google/protobuf/descriptor.pb.h"
 #include <gmock/gmock.h>
-#include "google/protobuf/testing/googletest.h"
 #include <gtest/gtest.h>
 #include "google/protobuf/descriptor.h"
 #include "google/protobuf/test_textproto.h"
@@ -72,10 +75,10 @@ class SimpleDescriptorDatabaseTestCase : public DescriptorDatabaseTestCase {
     return new SimpleDescriptorDatabaseTestCase;
   }
 
-  virtual ~SimpleDescriptorDatabaseTestCase() {}
+  ~SimpleDescriptorDatabaseTestCase() override {}
 
-  virtual DescriptorDatabase* GetDatabase() { return &database_; }
-  virtual bool AddToDatabase(const FileDescriptorProto& file) {
+  DescriptorDatabase* GetDatabase() override { return &database_; }
+  bool AddToDatabase(const FileDescriptorProto& file) override {
     return database_.Add(file);
   }
 
@@ -90,10 +93,10 @@ class EncodedDescriptorDatabaseTestCase : public DescriptorDatabaseTestCase {
     return new EncodedDescriptorDatabaseTestCase;
   }
 
-  virtual ~EncodedDescriptorDatabaseTestCase() {}
+  ~EncodedDescriptorDatabaseTestCase() override {}
 
-  virtual DescriptorDatabase* GetDatabase() { return &database_; }
-  virtual bool AddToDatabase(const FileDescriptorProto& file) {
+  DescriptorDatabase* GetDatabase() override { return &database_; }
+  bool AddToDatabase(const FileDescriptorProto& file) override {
     std::string data;
     file.SerializeToString(&data);
     return database_.AddCopy(data.data(), data.size());
@@ -111,10 +114,10 @@ class DescriptorPoolDatabaseTestCase : public DescriptorDatabaseTestCase {
   }
 
   DescriptorPoolDatabaseTestCase() : database_(pool_) {}
-  virtual ~DescriptorPoolDatabaseTestCase() {}
+  ~DescriptorPoolDatabaseTestCase() override {}
 
-  virtual DescriptorDatabase* GetDatabase() { return &database_; }
-  virtual bool AddToDatabase(const FileDescriptorProto& file) {
+  DescriptorDatabase* GetDatabase() override { return &database_; }
+  bool AddToDatabase(const FileDescriptorProto& file) override {
     return pool_.BuildFile(file);
   }
 
@@ -128,7 +131,7 @@ class DescriptorPoolDatabaseTestCase : public DescriptorDatabaseTestCase {
 class DescriptorDatabaseTest
     : public testing::TestWithParam<DescriptorDatabaseTestCaseFactory*> {
  protected:
-  virtual void SetUp() {
+  void SetUp() override {
     test_case_.reset(GetParam()());
     database_ = test_case_->GetDatabase();
   }
@@ -446,14 +449,14 @@ TEST_P(DescriptorDatabaseTest, ConflictingExtensionError) {
       "            extendee: \".Foo\" }");
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     Simple, DescriptorDatabaseTest,
     testing::Values(&SimpleDescriptorDatabaseTestCase::New));
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     MemoryConserving, DescriptorDatabaseTest,
     testing::Values(&EncodedDescriptorDatabaseTestCase::New));
-INSTANTIATE_TEST_CASE_P(Pool, DescriptorDatabaseTest,
-                        testing::Values(&DescriptorPoolDatabaseTestCase::New));
+INSTANTIATE_TEST_SUITE_P(Pool, DescriptorDatabaseTest,
+                         testing::Values(&DescriptorPoolDatabaseTestCase::New));
 
 TEST(EncodedDescriptorDatabaseExtraTest, FindNameOfFileContainingSymbol) {
   // Create two files, one of which is in two parts.

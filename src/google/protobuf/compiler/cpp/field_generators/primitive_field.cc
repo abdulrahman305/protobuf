@@ -11,13 +11,13 @@
 
 #include <cstddef>
 #include <memory>
-#include <string>
+#include <optional>
 #include <vector>
 
 #include "absl/log/absl_check.h"
 #include "absl/log/absl_log.h"
 #include "absl/memory/memory.h"
-#include "absl/types/optional.h"
+#include "absl/strings/string_view.h"
 #include "google/protobuf/compiler/cpp/field.h"
 #include "google/protobuf/compiler/cpp/field_generators/generators.h"
 #include "google/protobuf/compiler/cpp/helpers.h"
@@ -26,6 +26,10 @@
 #include "google/protobuf/descriptor.pb.h"
 #include "google/protobuf/io/printer.h"
 #include "google/protobuf/wire_format.h"
+#include "google/protobuf/wire_format_lite.h"
+
+// Must be included last.
+#include "google/protobuf/port_def.inc"
 
 namespace google {
 namespace protobuf {
@@ -38,7 +42,7 @@ using Sub = ::google::protobuf::io::Printer::Sub;
 using Semantic = ::google::protobuf::io::AnnotationCollector::Semantic;
 
 // For encodings with fixed sizes, returns that size in bytes.
-absl::optional<size_t> FixedSize(FieldDescriptor::Type type) {
+std::optional<size_t> FixedSize(FieldDescriptor::Type type) {
   switch (type) {
     case FieldDescriptor::TYPE_INT32:
     case FieldDescriptor::TYPE_INT64:
@@ -51,7 +55,7 @@ absl::optional<size_t> FixedSize(FieldDescriptor::Type type) {
     case FieldDescriptor::TYPE_BYTES:
     case FieldDescriptor::TYPE_GROUP:
     case FieldDescriptor::TYPE_MESSAGE:
-      return absl::nullopt;
+      return std::nullopt;
 
     case FieldDescriptor::TYPE_FIXED32:
       return WireFormatLite::kFixed32Size;
@@ -73,7 +77,7 @@ absl::optional<size_t> FixedSize(FieldDescriptor::Type type) {
   }
 
   ABSL_LOG(FATAL) << "Can't get here.";
-  return absl::nullopt;
+  return std::nullopt;
 }
 
 std::vector<Sub> Vars(const FieldDescriptor* field, const Options& options) {
@@ -246,8 +250,8 @@ void SingularPrimitive::GenerateSerializeWithCachedSizesToArray(
     // template parameter that handles the EnsureSpace and the writing
     // of the tag+value to the array
     p->Emit(R"cc(
-      target = ::$proto_ns$::internal::WireFormatLite::
-          Write$declared_type$ToArrayWithField<$number$>(
+      target =
+          $pbi$::WireFormatLite::Write$declared_type$ToArrayWithField<$number$>(
               stream, this_._internal_$name$(), target);
     )cc");
   } else {
@@ -285,6 +289,7 @@ void SingularPrimitive::GenerateByteSize(io::Printer* p) const {
                                     this_._internal_$name$());
   )cc");
 }
+
 
 class RepeatedPrimitive final : public FieldGeneratorBase {
  public:
@@ -332,7 +337,7 @@ class RepeatedPrimitive final : public FieldGeneratorBase {
   void GenerateDestructorCode(io::Printer* p) const override {
     if (should_split()) {
       p->Emit(R"cc(
-        $field_$.DeleteIfNotDefault();
+        this_.$field_$.DeleteIfNotDefault();
       )cc");
     }
   }
@@ -437,7 +442,7 @@ void RepeatedPrimitive::GeneratePrivateMembers(io::Printer* p) const {
   if (HasCachedSize()) {
     p->Emit({{"_cached_size_", MakeVarintCachedSizeName(field_)}},
             R"cc(
-              mutable $pbi$::CachedSize $_cached_size_$;
+              $pbi$::CachedSize $_cached_size_$;
             )cc");
   }
 }
@@ -454,11 +459,11 @@ void RepeatedPrimitive::GenerateAccessorDeclarations(io::Printer* p) const {
     $DEPRECATED$ void $set_name$(int index, $Type$ value);
     $DEPRECATED$ void $add_name$($Type$ value);
     $DEPRECATED$ const $pb$::RepeatedField<$Type$>& $name$() const;
-    $DEPRECATED$ $pb$::RepeatedField<$Type$>* $mutable_name$();
+    $DEPRECATED$ $pb$::RepeatedField<$Type$>* $nonnull$ $mutable_name$();
 
     private:
     const $pb$::RepeatedField<$Type$>& $_internal_name$() const;
-    $pb$::RepeatedField<$Type$>* $_internal_mutable_name$();
+    $pb$::RepeatedField<$Type$>* $nonnull$ $_internal_mutable_name$();
 
     public:
   )cc");
@@ -475,6 +480,9 @@ void RepeatedPrimitive::GenerateInlineAccessorDefinitions(
     }
   )cc");
   p->Emit(R"cc(
+    //~ Note: no need to set hasbit in set_$name$(int index). Hasbits only need
+    //~ to be updated if a new element is (potentially) added, not if an
+    //~ existing element is mutated.
     inline void $Msg$::set_$name$(int index, $Type$ value) {
       $WeakDescriptorSelfPin$;
       $annotate_set$;
@@ -487,6 +495,7 @@ void RepeatedPrimitive::GenerateInlineAccessorDefinitions(
       $WeakDescriptorSelfPin$;
       $TsanDetectConcurrentMutation$;
       _internal_mutable_$name_internal$()->Add(value);
+      $set_hasbit$;
       $annotate_add$;
       // @@protoc_insertion_point(field_add:$pkg.Msg.field$)
     }
@@ -501,9 +510,10 @@ void RepeatedPrimitive::GenerateInlineAccessorDefinitions(
     }
   )cc");
   p->Emit(R"cc(
-    inline $pb$::RepeatedField<$Type$>* $Msg$::mutable_$name$()
+    inline $pb$::RepeatedField<$Type$>* $nonnull$ $Msg$::mutable_$name$()
         ABSL_ATTRIBUTE_LIFETIME_BOUND {
       $WeakDescriptorSelfPin$;
+      $set_hasbit$;
       $annotate_mutable_list$;
       // @@protoc_insertion_point(field_mutable_list:$pkg.Msg.field$)
       $TsanDetectConcurrentMutation$;
@@ -518,7 +528,8 @@ void RepeatedPrimitive::GenerateInlineAccessorDefinitions(
         $TsanDetectConcurrentRead$;
         return *$field_$;
       }
-      inline $pb$::RepeatedField<$Type$>* $Msg$::_internal_mutable_$name_internal$() {
+      inline $pb$::RepeatedField<$Type$>* $nonnull$
+      $Msg$::_internal_mutable_$name_internal$() {
         $TsanDetectConcurrentRead$;
         $PrepareSplitMessageForWrite$;
         if ($field_$.IsDefault()) {
@@ -534,7 +545,8 @@ void RepeatedPrimitive::GenerateInlineAccessorDefinitions(
         $TsanDetectConcurrentRead$;
         return $field_$;
       }
-      inline $pb$::RepeatedField<$Type$>* $Msg$::_internal_mutable_$name_internal$() {
+      inline $pb$::RepeatedField<$Type$>* $nonnull$
+      $Msg$::_internal_mutable_$name_internal$() {
         $TsanDetectConcurrentRead$;
         return &$field_$;
       }
@@ -590,55 +602,54 @@ void RepeatedPrimitive::GenerateSerializeWithCachedSizesToArray(
 }
 
 void RepeatedPrimitive::GenerateByteSize(io::Printer* p) const {
+  if (HasCachedSize()) {
+    ABSL_CHECK(field_->is_packed());
+    p->Emit(
+        R"cc(
+          total_size +=
+              ::_pbi::WireFormatLite::$DeclaredType$SizeWithPackedTagSize(
+                  this_._internal_$name$(), $kTagBytes$,
+                  this_.$_field_cached_byte_size_$);
+        )cc");
+    return;
+  }
   p->Emit(
       {
-          Sub{"data_size",
-              [&] {
-                auto fixed_size = FixedSize(field_->type());
-                if (fixed_size.has_value()) {
-                  p->Emit({{"kFixed", *fixed_size}}, R"cc(
-                    std::size_t{$kFixed$} *
-                        ::_pbi::FromIntSize(this_._internal_$name$_size())
-                  )cc");
-                } else {
-                  p->Emit(R"cc(
-                    ::_pbi::WireFormatLite::$DeclaredType$Size(
-                        this_._internal_$name$())
-                  )cc");
-                }
-              }}  // Here and below, we need to disable the default ;-chomping
-                  // that closure substitutions do.
-              .WithSuffix(""),
-          {"maybe_cache_data_size",
+          {"data_size",
            [&] {
-             if (!HasCachedSize()) return;
-             p->Emit(R"cc(
-               this_.$_field_cached_byte_size_$.Set(
-                   ::_pbi::ToCachedSize(data_size));
-             )cc");
+             auto fixed_size = FixedSize(field_->type());
+             if (fixed_size.has_value()) {
+               p->Emit({{"kFixed", *fixed_size}}, R"cc(
+                 ::size_t{$kFixed$} *
+                     ::_pbi::FromIntSize(this_._internal_$name$_size());
+               )cc");
+             } else {
+               p->Emit(R"cc(
+                 ::_pbi::WireFormatLite::$DeclaredType$Size(
+                     this_._internal_$name$());
+               )cc");
+             }
            }},
-          Sub{"tag_size",
-              [&] {
-                if (field_->is_packed()) {
-                  p->Emit(R"cc(
-                    data_size == 0
-                        ? 0
-                        : $kTagBytes$ + ::_pbi::WireFormatLite::Int32Size(
-                                            static_cast<int32_t>(data_size))
-                  )cc");
-                } else {
-                  p->Emit(R"cc(
-                    std::size_t{$kTagBytes$} *
-                        ::_pbi::FromIntSize(this_._internal_$name$_size());
-                  )cc");
-                }
-              }}
-              .WithSuffix(""),
+          {"tag_size",
+           [&] {
+             if (field_->is_packed()) {
+               p->Emit(R"cc(
+                 data_size == 0
+                     ? 0
+                     : $kTagBytes$ + ::_pbi::WireFormatLite::Int32Size(
+                                         static_cast<::int32_t>(data_size));
+               )cc");
+             } else {
+               p->Emit(R"cc(
+                 ::size_t{$kTagBytes$} *
+                     ::_pbi::FromIntSize(this_._internal_$name$_size());
+               )cc");
+             }
+           }},
       },
       R"cc(
-        std::size_t data_size = $data_size$;
-        $maybe_cache_data_size$;
-        std::size_t tag_size = $tag_size$;
+        ::size_t data_size = $data_size$;
+        ::size_t tag_size = $tag_size$;
         total_size += tag_size + data_size;
       )cc");
 }
@@ -660,3 +671,5 @@ std::unique_ptr<FieldGeneratorBase> MakeRepeatedPrimitiveGenerator(
 }  // namespace compiler
 }  // namespace protobuf
 }  // namespace google
+
+#include "google/protobuf/port_undef.inc"

@@ -5,13 +5,13 @@
 // license that can be found in the LICENSE file or at
 // https://developers.google.com/open-source/licenses/bsd
 
-#ifndef PROTOBUF_COMPILER_HBP_GEN_NAMES_H_
-#define PROTOBUF_COMPILER_HBP_GEN_NAMES_H_
+#ifndef GOOGLE_PROTOBUF_COMPILER_HPB_NAMES_H__
+#define GOOGLE_PROTOBUF_COMPILER_HPB_NAMES_H__
 
 #include <string>
 
 #include "google/protobuf/descriptor.pb.h"
-#include "google/protobuf/compiler/hpb/output.h"
+#include "hpb_generator/context.h"
 
 namespace google::protobuf::hpb_generator {
 
@@ -24,19 +24,18 @@ std::string QualifiedClassName(const protobuf::Descriptor* descriptor);
 std::string QualifiedInternalClassName(const protobuf::Descriptor* descriptor);
 
 std::string CppSourceFilename(const google::protobuf::FileDescriptor* file);
-std::string ForwardingHeaderFilename(const google::protobuf::FileDescriptor* file);
 std::string UpbCFilename(const google::protobuf::FileDescriptor* file);
 std::string CppHeaderFilename(const google::protobuf::FileDescriptor* file);
 
-void WriteStartNamespace(const protobuf::FileDescriptor* file, Output& output);
-void WriteEndNamespace(const protobuf::FileDescriptor* file, Output& output);
+void WriteStartNamespace(const protobuf::FileDescriptor* file, Context& ctx);
+void WriteEndNamespace(const protobuf::FileDescriptor* file, Context& ctx);
 
 std::string CppConstType(const protobuf::FieldDescriptor* field);
 std::string CppTypeParameterName(const protobuf::FieldDescriptor* field);
 
 std::string MessageBaseType(const protobuf::FieldDescriptor* field,
                             bool is_const);
-// Generate protos::Ptr<const Model> to be used in accessors as public
+// Generate hpb::Ptr<const Model> to be used in accessors as public
 // signatures.
 std::string MessagePtrConstType(const protobuf::FieldDescriptor* field,
                                 bool is_const);
@@ -48,4 +47,4 @@ std::string MessageProxyType(const protobuf::FieldDescriptor* field,
 }  // namespace protobuf
 }  // namespace google::hpb_generator
 
-#endif  // PROTOBUF_COMPILER_HBP_GEN_NAMES_H_
+#endif  // GOOGLE_PROTOBUF_COMPILER_HPB_NAMES_H__

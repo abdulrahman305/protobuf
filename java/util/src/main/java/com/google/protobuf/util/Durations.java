@@ -7,20 +7,20 @@
 
 package com.google.protobuf.util;
 
-import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.math.IntMath.checkedAdd;
-import static com.google.common.math.IntMath.checkedSubtract;
-import static com.google.common.math.LongMath.checkedAdd;
-import static com.google.common.math.LongMath.checkedMultiply;
-import static com.google.common.math.LongMath.checkedSubtract;
 import static com.google.protobuf.util.Timestamps.MICROS_PER_SECOND;
 import static com.google.protobuf.util.Timestamps.MILLIS_PER_SECOND;
 import static com.google.protobuf.util.Timestamps.NANOS_PER_MICROSECOND;
 import static com.google.protobuf.util.Timestamps.NANOS_PER_MILLISECOND;
 import static com.google.protobuf.util.Timestamps.NANOS_PER_SECOND;
+import static java.lang.Math.addExact;
+import static java.lang.Math.multiplyExact;
+import static java.lang.Math.subtractExact;
 
+import com.google.common.annotations.GwtIncompatible;
+import com.google.common.annotations.J2ktIncompatible;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.CompileTimeConstant;
+import com.google.j2objc.annotations.J2ObjCIncompatible;
 import com.google.protobuf.Duration;
 import java.io.Serializable;
 import java.text.ParseException;
@@ -140,8 +140,14 @@ public final class Durations {
    * @throws NullPointerException if {@code duration} is {@code null}
    */
   @CanIgnoreReturnValue
+  @GwtIncompatible("Depends on String.format which is not supported in Xplat.")
+  @J2ktIncompatible
+  @J2ObjCIncompatible
   public static Duration checkNotNegative(Duration duration) {
-    checkArgument(!isNegative(duration), "duration (%s) must not be negative", toString(duration));
+    if (isNegative(duration)) {
+      throw new IllegalArgumentException(
+          "duration (" + toString(duration) + ") must not be negative");
+    }
     return duration;
   }
 
@@ -152,8 +158,13 @@ public final class Durations {
    * @throws NullPointerException if {@code duration} is {@code null}
    */
   @CanIgnoreReturnValue
+  @GwtIncompatible("Depends on String.format which is not supported in Xplat.")
+  @J2ktIncompatible
+  @J2ObjCIncompatible
   public static Duration checkPositive(Duration duration) {
-    checkArgument(isPositive(duration), "duration (%s) must be positive", toString(duration));
+    if (!isPositive(duration)) {
+      throw new IllegalArgumentException("duration (" + toString(duration) + ") must be positive");
+    }
     return duration;
   }
 
@@ -164,12 +175,14 @@ public final class Durations {
     int nanos = duration.getNanos();
     if (!isValid(seconds, nanos)) {
       throw new IllegalArgumentException(
-          String.format(
-              "Duration is not valid. See proto definition for valid values. "
-                  + "Seconds (%s) must be in range [-315,576,000,000, +315,576,000,000]. "
-                  + "Nanos (%s) must be in range [-999,999,999, +999,999,999]. "
-                  + "Nanos must have the same sign as seconds",
-              seconds, nanos));
+          "Duration is not valid. See proto definition for valid values. "
+              + "Seconds ("
+              + seconds
+              + ") must be in range [-315,576,000,000, +315,576,000,000]. "
+              + "Nanos ("
+              + nanos
+              + ") must be in range [-999,999,999, +999,999,999]. "
+              + "Nanos must have the same sign as seconds");
     }
     return duration;
   }
@@ -193,6 +206,9 @@ public final class Durations {
    * @return The string representation of the given duration.
    * @throws IllegalArgumentException if the given duration is not in the valid range.
    */
+  @GwtIncompatible("Depends on String.format which is not supported in Xplat.")
+  @J2ktIncompatible
+  @J2ObjCIncompatible
   public static String toString(Duration duration) {
     checkValid(duration);
 
@@ -220,6 +236,9 @@ public final class Durations {
    * @return a Duration parsed from the string
    * @throws ParseException if the string is not in the duration format
    */
+  @GwtIncompatible("ParseException is not supported in Xplat")
+  @J2ktIncompatible
+  @J2ObjCIncompatible
   public static Duration parse(String value) throws ParseException {
     // Must end with "s".
     if (value.isEmpty() || value.charAt(value.length() - 1) != 's') {
@@ -237,7 +256,12 @@ public final class Durations {
       nanoValue = secondValue.substring(pointPosition + 1);
       secondValue = secondValue.substring(0, pointPosition);
     }
-    long seconds = Long.parseLong(secondValue);
+    long seconds;
+    try {
+      seconds = Long.parseLong(secondValue);
+    } catch (NumberFormatException e) {
+      throw new ParseException("Invalid duration string: " + value, 0);
+    }
     int nanos = nanoValue.isEmpty() ? 0 : Timestamps.parseNanos(nanoValue);
     if (seconds < 0) {
       throw new ParseException("Invalid duration string: " + value, 0);
@@ -264,6 +288,9 @@ public final class Durations {
    * @return a {@link Duration} parsed from the string
    * @throws IllegalArgumentException if parsing fails
    */
+  @GwtIncompatible("ParseException is not supported in Xplat")
+  @J2ktIncompatible
+  @J2ObjCIncompatible
   public static Duration parseUnchecked(@CompileTimeConstant String value) {
     try {
       return parse(value);
@@ -279,28 +306,19 @@ public final class Durations {
   /** Create a Duration from the number of days. */
   @SuppressWarnings("GoodTime") // this is a legacy conversion API
   public static Duration fromDays(long days) {
-    return Duration.newBuilder()
-        .setSeconds(checkedMultiply(days, SECONDS_PER_DAY))
-        .setNanos(0)
-        .build();
+    return Durations.fromSeconds(multiplyExact(days, SECONDS_PER_DAY));
   }
 
   /** Create a Duration from the number of hours. */
   @SuppressWarnings("GoodTime") // this is a legacy conversion API
   public static Duration fromHours(long hours) {
-    return Duration.newBuilder()
-        .setSeconds(checkedMultiply(hours, SECONDS_PER_HOUR))
-        .setNanos(0)
-        .build();
+    return Durations.fromSeconds(multiplyExact(hours, SECONDS_PER_HOUR));
   }
 
   /** Create a Duration from the number of minutes. */
   @SuppressWarnings("GoodTime") // this is a legacy conversion API
   public static Duration fromMinutes(long minutes) {
-    return Duration.newBuilder()
-        .setSeconds(checkedMultiply(minutes, SECONDS_PER_MINUTE))
-        .setNanos(0)
-        .build();
+    return Durations.fromSeconds(multiplyExact(minutes, SECONDS_PER_MINUTE));
   }
 
   /** Create a Duration from the number of seconds. */
@@ -395,8 +413,8 @@ public final class Durations {
   @SuppressWarnings("GoodTime") // this is a legacy conversion API
   public static long toMillis(Duration duration) {
     checkValid(duration);
-    return checkedAdd(
-        checkedMultiply(duration.getSeconds(), MILLIS_PER_SECOND),
+    return addExact(
+        multiplyExact(duration.getSeconds(), (long) MILLIS_PER_SECOND),
         duration.getNanos() / NANOS_PER_MILLISECOND);
   }
 
@@ -407,8 +425,8 @@ public final class Durations {
   @SuppressWarnings("GoodTime") // this is a legacy conversion API
   public static long toMicros(Duration duration) {
     checkValid(duration);
-    return checkedAdd(
-        checkedMultiply(duration.getSeconds(), MICROS_PER_SECOND),
+    return addExact(
+        multiplyExact(duration.getSeconds(), (long) MICROS_PER_SECOND),
         duration.getNanos() / NANOS_PER_MICROSECOND);
   }
 
@@ -416,52 +434,32 @@ public final class Durations {
   @SuppressWarnings("GoodTime") // this is a legacy conversion API
   public static long toNanos(Duration duration) {
     checkValid(duration);
-    return checkedAdd(
-        checkedMultiply(duration.getSeconds(), NANOS_PER_SECOND), duration.getNanos());
+    return addExact(
+        multiplyExact(duration.getSeconds(), (long) NANOS_PER_SECOND), duration.getNanos());
   }
 
   // Math operations
 
-  /**
-   * Add two durations.
-   *
-   * <!-- MOE:begin_intracomment_strip -->
-   * @deprecated Do not use this method for new code. Instead, convert to {@link java.time.Duration}
-   *     using {@link com.google.protobuf.util.JavaTimeConversions#toJavaDuration}, do the
-   *     arithmetic there, and convert back using {@link
-   *     com.google.protobuf.util.JavaTimeConversions#toProtoDuration}.
-   * <!-- MOE:end_intracomment_strip -->
-   */
-  @Deprecated // MOE:strip_line
+  /** Add two durations. */
   public static Duration add(Duration d1, Duration d2) {
     checkValid(d1);
     checkValid(d2);
     return normalizedDuration(
-        checkedAdd(d1.getSeconds(), d2.getSeconds()), checkedAdd(d1.getNanos(), d2.getNanos()));
+        addExact(d1.getSeconds(), d2.getSeconds()), addExact(d1.getNanos(), d2.getNanos()));
   }
 
-  /**
-   * Subtract a duration from another.
-   *
-   * <!-- MOE:begin_intracomment_strip -->
-   * @deprecated Do not use this method for new code. Instead, convert to {@link java.time.Duration}
-   *     using {@link com.google.protobuf.util.JavaTimeConversions#toJavaDuration}, do the
-   *     arithmetic there, and convert back using {@link
-   *     com.google.protobuf.util.JavaTimeConversions#toProtoDuration}.
-   * <!-- MOE:end_intracomment_strip -->
-   */
-  @Deprecated // MOE:strip_line
+  /** Subtract a duration from another. */
   public static Duration subtract(Duration d1, Duration d2) {
     checkValid(d1);
     checkValid(d2);
     return normalizedDuration(
-        checkedSubtract(d1.getSeconds(), d2.getSeconds()),
-        checkedSubtract(d1.getNanos(), d2.getNanos()));
+        subtractExact(d1.getSeconds(), d2.getSeconds()),
+        subtractExact(d1.getNanos(), d2.getNanos()));
   }
 
   static Duration normalizedDuration(long seconds, int nanos) {
     if (nanos <= -NANOS_PER_SECOND || nanos >= NANOS_PER_SECOND) {
-      seconds = checkedAdd(seconds, nanos / NANOS_PER_SECOND);
+      seconds = addExact(seconds, nanos / NANOS_PER_SECOND);
       nanos %= NANOS_PER_SECOND;
     }
     if (seconds > 0 && nanos < 0) {

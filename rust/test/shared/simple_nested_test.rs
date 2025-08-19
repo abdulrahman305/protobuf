@@ -5,12 +5,19 @@
 // license that can be found in the LICENSE file or at
 // https://developers.google.com/open-source/licenses/bsd
 
+#[cfg(not(bzl))]
+mod protos;
+#[cfg(not(bzl))]
+use protos::*;
+
 use googletest::prelude::*;
+use map_unittest_rust_proto::TestRecursiveMapMessage;
 use nested_rust_proto::outer::inner::InnerEnum;
 use nested_rust_proto::outer::InnerView;
 use nested_rust_proto::*;
+use protobuf::prelude::*;
 
-#[test]
+#[gtest]
 fn test_deeply_nested_message() {
     let deep =
         outer::inner::super_inner::duper_inner::even_more_inner::CantBelieveItsSoInner::new();
@@ -20,7 +27,7 @@ fn test_deeply_nested_message() {
     assert_that!(outermsg.deep().num(), eq(0));
 }
 
-#[test]
+#[gtest]
 fn test_deeply_nested_enum() {
     use outer::inner::super_inner::duper_inner::even_more_inner::JustWayTooInner;
     let deep = JustWayTooInner::default();
@@ -30,7 +37,7 @@ fn test_deeply_nested_enum() {
     assert_that!(outermsg.deep_enum(), eq(JustWayTooInner::Unspecified));
 }
 
-#[test]
+#[gtest]
 fn test_nested_views() {
     let outermsg = Outer::new();
     let inner_msg: InnerView<'_> = outermsg.inner();
@@ -47,13 +54,13 @@ fn test_nested_views() {
     assert_that!(inner_msg.sfixed32(), eq(0));
     assert_that!(inner_msg.sfixed64(), eq(0));
     assert_that!(inner_msg.bool(), eq(false));
-    assert_that!(*inner_msg.string().as_bytes(), empty());
-    assert_that!(*inner_msg.bytes(), empty());
+    assert_that!(*inner_msg.string().as_bytes(), is_empty());
+    assert_that!(*inner_msg.bytes(), is_empty());
     assert_that!(inner_msg.inner_submsg().flag(), eq(false));
     assert_that!(inner_msg.inner_enum(), eq(InnerEnum::Unspecified));
 }
 
-#[test]
+#[gtest]
 fn test_nested_view_lifetimes() {
     // Ensure that views have the lifetime of the first layer of borrow, and don't
     // create intermediate borrows through nested accessors.
@@ -70,16 +77,16 @@ fn test_nested_view_lifetimes() {
     assert_that!(inner_submsg.flag(), eq(false));
 
     let repeated_int32 = outermsg.inner().repeated_int32();
-    assert_that!(repeated_int32, empty());
+    assert_that!(repeated_int32, is_empty());
 
     let repeated_inner_submsg = outermsg.inner().repeated_inner_submsg();
-    assert_that!(repeated_inner_submsg, empty());
+    assert_that!(repeated_inner_submsg, is_empty());
 
     let string_map = outermsg.inner().string_map();
     assert_that!(string_map.len(), eq(0));
 }
 
-#[test]
+#[gtest]
 fn test_msg_from_outside() {
     // let's make sure that we're not just working for messages nested inside
     // messages, messages from without and within should work
@@ -87,7 +94,7 @@ fn test_msg_from_outside() {
     assert_that!(outer.notinside().num(), eq(0));
 }
 
-#[test]
+#[gtest]
 fn test_recursive_view() {
     let rec = nested_rust_proto::Recursive::new();
     assert_that!(rec.num(), eq(0));
@@ -100,7 +107,7 @@ fn test_recursive_view() {
     assert_that!(nested.num(), eq(0));
 }
 
-#[test]
+#[gtest]
 fn test_recursive_mut() {
     let mut rec = nested_rust_proto::Recursive::new();
     let mut one = rec.rec_mut();
@@ -119,4 +126,13 @@ fn test_recursive_mut() {
     // See b/314989133.
     // let nested = rec.rec_mut().rec_mut().rec_mut();
     // assert_that!(nested.num(), eq(0));
+}
+
+#[gtest]
+fn test_recursive_map() {
+    let mut m1 = TestRecursiveMapMessage::new();
+    m1.a_mut().insert("k", TestRecursiveMapMessage::new());
+    let m2 = TestRecursiveMapMessage::parse(&m1.serialize().unwrap()).unwrap();
+    assert_that!(m2.a().len(), eq(1));
+    expect_that!(m2.a().get("k"), not(none()));
 }

@@ -5,79 +5,93 @@
 # license that can be found in the LICENSE file or at
 # https://developers.google.com/open-source/licenses/bsd
 
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("//bazel/toolchains:proto_lang_toolchain.bzl", "proto_lang_toolchain")
 load(
     "//upb/bazel:build_defs.bzl",
     "UPB_DEFAULT_CPPOPTS",
 )
 
-# begin:google_only
-# package(default_applicable_licenses = ["//upb:license"])
-# end:google_only
+package(default_applicable_licenses = ["//:license"])
 
 licenses(["notice"])
 
 cc_binary(
-    name = "protoc-gen-upb-protos",
+    name = "protoc-gen-hpb",
     srcs = [
-        "protoc-gen-upb-protos.cc",
+        "protoc-gen-hpb.cc",
     ],
     copts = UPB_DEFAULT_CPPOPTS,
+    malloc = "@bazel_tools//tools/cpp:malloc",
     visibility = ["//visibility:public"],
     deps = [
-        ":gen_utils",
         ":generator",
-        ":names",
-        ":output",
-        "//:protobuf",
-        "//src/google/protobuf",
-        "//src/google/protobuf/compiler:code_generator",
         "//src/google/protobuf/compiler:plugin",
-        "//upb_generator:file_layout",
+        "@abseil-cpp//absl/flags:flag",
     ],
+)
+
+proto_lang_toolchain(
+    name = "toolchain",
+    command_line = select({
+        "//hpb:hpb_backend_upb": "--hpb_out=$(OUT)",
+        "//hpb:hpb_backend_cpp": "--hpb_out=backend=cpp:$(OUT)",
+    }),
+    output_files = "multiple",
+    plugin = ":protoc-gen-hpb",
+    plugin_format_flag = "--plugin=protoc-gen-hpb=%s",
+    progress_message = "Generating hpb protocol buffers",
+    runtime = "//hpb:generated_hpb_support",
+    visibility = ["//hpb/bazel:__pkg__"],
 )
 
 cc_library(
     name = "generator",
     srcs = [
         "gen_accessors.cc",
+        "gen_accessors.h",
         "gen_enums.cc",
+        "gen_enums.h",
         "gen_extensions.cc",
+        "gen_extensions.h",
         "gen_messages.cc",
+        "gen_messages.h",
         "gen_repeated_fields.cc",
+        "gen_repeated_fields.h",
+        "generator.cc",
     ],
     hdrs = [
-        "gen_accessors.h",
-        "gen_enums.h",
-        "gen_extensions.h",
-        "gen_messages.h",
-        "gen_repeated_fields.h",
+        "generator.h",
     ],
+    copts = UPB_DEFAULT_CPPOPTS,
     visibility = ["//visibility:private"],
     deps = [
+        ":context",
         ":gen_utils",
+        ":keywords",
         ":names",
-        ":output",
-        "//:protobuf",
         "//src/google/protobuf",
+        "//src/google/protobuf/compiler:code_generator",
+        "//src/google/protobuf/compiler:code_generator_lite",
+        "//src/google/protobuf/compiler:plugin",
         "//upb_generator:common",
         "//upb_generator:file_layout",
-        "//upb_generator:keywords",
-        "//upb_generator:names",
-        "@com_google_absl//absl/container:flat_hash_set",
-        "@com_google_absl//absl/strings",
+        "//upb_generator/c:names",
+        "//upb_generator/minitable:names",
+        "@abseil-cpp//absl/container:flat_hash_set",
+        "@abseil-cpp//absl/strings",
     ],
 )
 
 cc_library(
-    name = "output",
-    srcs = ["output.cc"],
-    hdrs = ["output.h"],
+    name = "keywords",
+    srcs = ["keywords.cc"],
+    hdrs = ["keywords.h"],
     visibility = ["//visibility:private"],
     deps = [
-        "//:protobuf",
-        "//src/google/protobuf/io",
-        "@com_google_absl//absl/log:absl_log",
-        "@com_google_absl//absl/strings",
+        "@abseil-cpp//absl/container:flat_hash_set",
+        "@abseil-cpp//absl/strings",
     ],
 )
 
@@ -87,10 +101,10 @@ cc_library(
     hdrs = ["gen_utils.h"],
     visibility = ["//visibility:public"],
     deps = [
-        "//:protobuf",
         "//src/google/protobuf",
         "//src/google/protobuf/compiler:code_generator",
-        "@com_google_absl//absl/strings",
+        "@abseil-cpp//absl/log:absl_log",
+        "@abseil-cpp//absl/strings",
     ],
 )
 
@@ -100,8 +114,26 @@ cc_library(
     hdrs = ["names.h"],
     visibility = ["//visibility:private"],
     deps = [
-        ":output",
+        ":context",
+        ":keywords",
         "//src/google/protobuf",
-        "//upb_generator:keywords",
+        "//src/google/protobuf/compiler:code_generator",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/strings:string_view",
+    ],
+)
+
+cc_library(
+    name = "context",
+    hdrs = ["context.h"],
+    deps = [
+        "//src/google/protobuf",
+        "//src/google/protobuf/io",
+        "//src/google/protobuf/io:printer",
+        "//upb/reflection",
+        "//upb_generator/common:cpp_to_upb_def",
+        "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/strings:string_view",
+        "@abseil-cpp//absl/types:span",
     ],
 )

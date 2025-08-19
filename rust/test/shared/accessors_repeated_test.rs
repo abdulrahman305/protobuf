@@ -5,18 +5,23 @@
 // license that can be found in the LICENSE file or at
 // https://developers.google.com/open-source/licenses/bsd
 
+#[cfg(not(bzl))]
+mod protos;
+#[cfg(not(bzl))]
+use protos::*;
+
 use googletest::prelude::*;
 use paste::paste;
-use protobuf::ViewProxy;
+use protobuf::{proto, AsMut, AsView, Repeated};
 use unittest_rust_proto::{test_all_types, test_all_types::NestedMessage, TestAllTypes};
 
 macro_rules! generate_repeated_numeric_test {
   ($(($t: ty, $field: ident)),*) => {
       paste! { $(
-          #[test]
+          #[gtest]
           fn [< test_repeated_ $field _accessors >]() {
               let mut msg = TestAllTypes::new();
-              assert_that!(msg.[< repeated_ $field >](), empty());
+              assert_that!(msg.[< repeated_ $field >](), is_empty());
               assert_that!(msg.[< repeated_ $field >]().len(), eq(0));
               assert_that!(msg.[<repeated_ $field >]().get(0), none());
 
@@ -52,7 +57,7 @@ macro_rules! generate_repeated_numeric_test {
               );
           }
 
-          #[test]
+          #[gtest]
           fn [< test_repeated_ $field _set >]() {
               let mut msg = TestAllTypes::new();
               let mut msg2 = TestAllTypes::new();
@@ -70,7 +75,7 @@ macro_rules! generate_repeated_numeric_test {
               );
           }
 
-          #[test]
+          #[gtest]
           fn [< test_repeated_ $field _exact_size_iterator >]() {
             let mut msg = TestAllTypes::new();
             let mut mutator = msg.[<repeated_ $field _mut>]();
@@ -104,10 +109,10 @@ generate_repeated_numeric_test!(
     (f64, double)
 );
 
-#[test]
+#[gtest]
 fn test_repeated_bool_accessors() {
     let mut msg = TestAllTypes::new();
-    assert_that!(msg.repeated_bool(), empty());
+    assert_that!(msg.repeated_bool(), is_empty());
     assert_that!(msg.repeated_bool().len(), eq(0));
     assert_that!(msg.repeated_bool().get(0), none());
 
@@ -134,12 +139,12 @@ fn test_repeated_bool_accessors() {
     assert_that!(msg.repeated_bool(), each(eq(false)));
 }
 
-#[test]
+#[gtest]
 fn test_repeated_enum_accessors() {
     use test_all_types::NestedEnum;
 
     let mut msg = TestAllTypes::new();
-    assert_that!(msg.repeated_nested_enum(), empty());
+    assert_that!(msg.repeated_nested_enum(), is_empty());
     assert_that!(msg.repeated_nested_enum().len(), eq(0));
     assert_that!(msg.repeated_nested_enum().get(0), none());
 
@@ -172,7 +177,19 @@ fn test_repeated_enum_accessors() {
     assert_that!(msg.repeated_nested_enum(), each(eq(NestedEnum::Foo)));
 }
 
-#[test]
+#[gtest]
+fn test_repeated_enum_set() {
+    use test_all_types::NestedEnum;
+
+    let mut msg = TestAllTypes::new();
+    msg.set_repeated_nested_enum([NestedEnum::Foo, NestedEnum::Bar, NestedEnum::Baz].into_iter());
+    assert_that!(
+        msg.repeated_nested_enum(),
+        elements_are![eq(NestedEnum::Foo), eq(NestedEnum::Bar), eq(NestedEnum::Baz)]
+    );
+}
+
+#[gtest]
 fn test_repeated_bool_set() {
     let mut msg = TestAllTypes::new();
     let mut msg2 = TestAllTypes::new();
@@ -187,7 +204,7 @@ fn test_repeated_bool_set() {
     assert_that!(&view.iter().collect::<Vec<_>>(), eq(&mutator2.iter().collect::<Vec<_>>()));
 }
 
-#[test]
+#[gtest]
 fn test_repeated_message() {
     let mut msg = TestAllTypes::new();
     assert_that!(msg.repeated_nested_message().len(), eq(0));
@@ -197,7 +214,13 @@ fn test_repeated_message() {
     assert_that!(msg.repeated_nested_message().get(0).unwrap().bb(), eq(1));
 
     let mut msg2 = TestAllTypes::new();
+    for _i in 0..2 {
+        msg2.repeated_nested_message_mut().push(NestedMessage::new());
+    }
+    assert_that!(msg2.repeated_nested_message().len(), eq(2));
+
     msg2.repeated_nested_message_mut().copy_from(msg.repeated_nested_message());
+    assert_that!(msg2.repeated_nested_message().len(), eq(1));
     assert_that!(msg2.repeated_nested_message().get(0).unwrap().bb(), eq(1));
 
     let mut nested2 = NestedMessage::new();
@@ -211,6 +234,12 @@ fn test_repeated_message() {
         elements_are![predicate(|m: protobuf::View<NestedMessage>| m.bb() == 2)],
     );
 
+    msg.repeated_nested_message_mut().get_mut(0).unwrap().set_bb(3);
+    assert_that!(
+        msg.repeated_nested_message(),
+        elements_are![predicate(|m: protobuf::View<NestedMessage>| m.bb() == 3)],
+    );
+
     drop(msg);
 
     assert_that!(msg2.repeated_nested_message().get(0).unwrap().bb(), eq(1));
@@ -218,12 +247,37 @@ fn test_repeated_message() {
     assert_that!(msg2.repeated_nested_message().len(), eq(0));
 }
 
-#[test]
+#[gtest]
+fn test_repeated_message_setter() {
+    let mut msg = TestAllTypes::new();
+    let mut nested = NestedMessage::new();
+    nested.set_bb(1);
+    msg.set_repeated_nested_message([nested].into_iter());
+    assert_that!(msg.repeated_nested_message().get(0).unwrap().bb(), eq(1));
+}
+
+#[gtest]
+fn test_empty_repeated_message_drop() {
+    let _ = Repeated::<TestAllTypes>::new();
+}
+
+#[gtest]
+fn test_repeated_message_drop() {
+    let mut repeated = Repeated::<TestAllTypes>::new();
+    repeated.as_mut().push(TestAllTypes::new());
+
+    {
+        let v: Vec<TestAllTypes> = vec![proto!(TestAllTypes { optional_int32: 1 })];
+        repeated.as_mut().extend(v.iter().cloned());
+    }
+}
+
+#[gtest]
 fn test_repeated_strings() {
     let mut older_msg = TestAllTypes::new();
     {
         let mut msg = TestAllTypes::new();
-        assert_that!(msg.repeated_string(), empty());
+        assert_that!(msg.repeated_string(), is_empty());
         {
             let s = String::from("set from Mut");
             msg.repeated_string_mut().push(s);
@@ -250,15 +304,15 @@ fn test_repeated_strings() {
     );
 
     older_msg.repeated_string_mut().clear();
-    assert_that!(older_msg.repeated_string(), empty());
+    assert_that!(older_msg.repeated_string(), is_empty());
 }
 
-#[test]
+#[gtest]
 fn test_repeated_bytes() {
     let mut older_msg = TestAllTypes::new();
     {
         let mut msg = TestAllTypes::new();
-        assert_that!(msg.repeated_bytes(), empty());
+        assert_that!(msg.repeated_bytes(), is_empty());
         {
             let s = Vec::from(b"set from Mut");
             msg.repeated_bytes_mut().push(s);
@@ -287,5 +341,5 @@ fn test_repeated_bytes() {
     );
 
     older_msg.repeated_bytes_mut().clear();
-    assert_that!(older_msg.repeated_bytes(), empty());
+    assert_that!(older_msg.repeated_bytes(), is_empty());
 }

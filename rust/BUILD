@@ -1,16 +1,19 @@
 # Protobuf Rust runtime packages.
 
 load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
+load("@rules_pkg//pkg:mappings.bzl", "pkg_filegroup", "pkg_files", "strip_prefix")
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
 load("//bazel/toolchains:proto_lang_toolchain.bzl", "proto_lang_toolchain")
 
-package(
-    default_visibility = [
-        "//src/google/protobuf:__subpackages__",
+licenses(["notice"])
+
+package_group(
+    name = "protobuf_internal",
+    packages = [
+        "//rust/...",
+        "//src/google/protobuf/...",
     ],
 )
-
-licenses(["notice"])
 
 # The current Rust Protobuf runtime for the build. Depending on the value of
 # `:rust_proto_library_kernel` build setting it forwards to the cpp or upb kernels. This is the
@@ -32,6 +35,7 @@ rust_library(
         ":use_upb_kernel": ["--cfg=upb_kernel"],
         "//conditions:default": ["--cfg=cpp_kernel"],
     }),
+    visibility = ["//visibility:public"],
     deps = select({
         ":use_upb_kernel": [":protobuf_upb"],
         "//conditions:default": [":protobuf_cpp"],
@@ -46,16 +50,32 @@ rust_library(
 #
 # shared.rs is the root of the crate and has public items re-exported in protobuf.rs for user use.
 PROTOBUF_SHARED = [
+    # go/keep-sorted start
+    "codegen_traits.rs",
+    "cord.rs",
     "enum.rs",
     "internal.rs",
-    "primitive.rs",
+    "map.rs",
     "optional.rs",
+    "prelude.rs",
+    "primitive.rs",
     "proxied.rs",
     "repeated.rs",
     "shared.rs",
     "string.rs",
-    "map.rs",
-    "proto_macro.rs",
+    # go/keep-sorted end
+]
+
+# All Rust source files; this is used for packaging up a crate.
+ALL_RUST_SRCS = PROTOBUF_SHARED + [
+    # go/keep-sorted start
+    "cpp.rs",
+    "gtest_matchers.rs",
+    "gtest_matchers_impl.rs",
+    "protobuf.rs",
+    "upb.rs",
+    "utf8.rs",
+    # go/keep-sorted end
 ]
 
 # The Rust Protobuf runtime using the upb kernel.
@@ -68,13 +88,14 @@ rust_library(
     srcs = PROTOBUF_SHARED + ["upb.rs"],
     crate_root = "shared.rs",
     proc_macro_deps = [
+        "//rust/protobuf_macros",
         "@crate_index//:paste",
     ],
-    rustc_flags = ["--cfg=upb_kernel"],
-    visibility = [
-        "//rust:__subpackages__",
-        "//src/google/protobuf:__subpackages__",
+    rustc_flags = [
+        "--cfg=upb_kernel",
+        "--cfg=bzl",
     ],
+    visibility = [":protobuf_internal"],
     deps = [
         ":utf8",
         "//rust/upb",
@@ -86,6 +107,7 @@ rust_test(
     crate = ":protobuf_upb",
     rustc_flags = [
         "--cfg=upb_kernel",
+        "--cfg=bzl",
     ],
     deps = [
         "@crate_index//:googletest",
@@ -99,9 +121,7 @@ rust_library(
     testonly = True,
     srcs = ["protobuf.rs"],
     rustc_flags = ["--cfg=upb_kernel"],
-    visibility = [
-        "//src/google/protobuf:__subpackages__",
-    ],
+    visibility = [":protobuf_internal"],
     deps = [":protobuf_upb"],
 )
 
@@ -115,9 +135,14 @@ rust_library(
     srcs = PROTOBUF_SHARED + ["cpp.rs"],
     crate_root = "shared.rs",
     proc_macro_deps = [
+        "//rust/protobuf_macros",
         "@crate_index//:paste",
     ],
-    rustc_flags = ["--cfg=cpp_kernel"],
+    rustc_flags = [
+        "--cfg=cpp_kernel",
+        "--cfg=bzl",
+    ],
+    visibility = [":protobuf_internal"],
     deps = [
         ":utf8",
         "//rust/cpp_kernel:cpp_api",
@@ -129,6 +154,7 @@ rust_test(
     crate = ":protobuf_cpp",
     rustc_flags = [
         "--cfg=cpp_kernel",
+        "--cfg=bzl",
     ],
     deps = [
         "@crate_index//:googletest",
@@ -142,21 +168,64 @@ rust_library(
     testonly = True,
     srcs = ["protobuf.rs"],
     rustc_flags = ["--cfg=cpp_kernel"],
-    visibility = [
-        "//src/google/protobuf:__subpackages__",
-    ],
+    visibility = [":protobuf_internal"],
     deps = [":protobuf_cpp"],
+)
+
+rust_library(
+    name = "protobuf_gtest_matchers",
+    testonly = True,
+    srcs = ["gtest_matchers.rs"],
+    aliases = select({
+        ":use_upb_kernel": {"//rust:protobuf_gtest_matchers_upb": "protobuf_gtest_matchers_impl"},
+        "//conditions:default": {"//rust:protobuf_gtest_matchers_cpp": "protobuf_gtest_matchers_impl"},
+    }),
+    visibility = ["//visibility:public"],
+    deps = select({
+        ":use_upb_kernel": [":protobuf_gtest_matchers_upb"],
+        "//conditions:default": [":protobuf_gtest_matchers_cpp"],
+    }),
+)
+
+rust_library(
+    name = "protobuf_gtest_matchers_cpp",
+    testonly = True,
+    srcs = ["gtest_matchers_impl.rs"],
+    aliases = {
+        "//rust:protobuf_cpp": "protobuf",
+    },
+    visibility = [":protobuf_internal"],
+    deps = [
+        ":protobuf_cpp",
+        "@crate_index//:googletest",
+    ],
+)
+
+rust_library(
+    name = "protobuf_gtest_matchers_upb",
+    testonly = True,
+    srcs = ["gtest_matchers_impl.rs"],
+    aliases = {
+        "//rust:protobuf_upb": "protobuf",
+    },
+    visibility = [":protobuf_internal"],
+    deps = [
+        ":protobuf_upb",
+        "@crate_index//:googletest",
+    ],
 )
 
 rust_library(
     name = "utf8",
     srcs = ["utf8.rs"],
-    visibility = ["//visibility:private"],
 )
 
 proto_lang_toolchain(
     name = "proto_rust_upb_toolchain",
     command_line = "--rust_out=$(OUT)",
+    output_files = "multiple",
+    plugin = "//src/google/protobuf/compiler/rust:protoc-gen-rust",
+    plugin_format_flag = "--plugin=protoc-gen-rust=%s",
     progress_message = "Generating Rust proto_library %{label}",
     runtime = ":protobuf_upb",
     visibility = ["//visibility:public"],
@@ -165,6 +234,9 @@ proto_lang_toolchain(
 proto_lang_toolchain(
     name = "proto_rust_cpp_toolchain",
     command_line = "--rust_out=$(OUT)",
+    output_files = "multiple",
+    plugin = "//src/google/protobuf/compiler/rust:protoc-gen-rust",
+    plugin_format_flag = "--plugin=protoc-gen-rust=%s",
     progress_message = "Generating Rust proto_library %{label}",
     runtime = ":protobuf_cpp",
     visibility = ["//visibility:public"],
@@ -190,4 +262,41 @@ config_setting(
     flag_values = {
         ":rust_proto_library_kernel": "upb",
     },
+)
+
+pkg_files(
+    name = "rust_protobuf_src",
+    srcs = ALL_RUST_SRCS,
+    strip_prefix = strip_prefix.from_root("rust"),
+)
+
+pkg_filegroup(
+    name = "rust_protobuf_src_dir",
+    srcs = [
+        ":rust_protobuf_src",
+        "//rust/upb:src",
+    ],
+    prefix = "src",
+    visibility = ["//rust/release_crates:__subpackages__"],
+)
+
+pkg_files(
+    name = "amalgamated_upb",
+    srcs = ["//upb:gen_amalgamation"],
+    strip_prefix = strip_prefix.from_root(""),
+)
+
+pkg_filegroup(
+    name = "rust_protobuf_libupb_src",
+    srcs = [
+        ":amalgamated_upb",
+        "//upb/cmake:upb_cmake_dist",
+    ],
+    prefix = "libupb",
+    visibility = ["//rust/release_crates:__subpackages__"],
+)
+
+alias(
+    name = "release",
+    actual = "//rust/release_crates:workspace",
 )

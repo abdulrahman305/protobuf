@@ -4,12 +4,13 @@
 # Use of this source code is governed by a BSD-style
 # license that can be found in the LICENSE file or at
 # https://developers.google.com/open-source/licenses/bsd
-
 """
 Provide a rule for generating the intermediate feature set defaults used for feature resolution.
 
 See go/life-of-a-featureset for more information.
 """
+
+load("//bazel/common:proto_info.bzl", "ProtoInfo")
 
 def _compile_edition_defaults_impl(ctx):
     out_file = ctx.actions.declare_file(ctx.outputs.output.basename)
@@ -51,7 +52,7 @@ compile_edition_defaults = rule(
             cfg = "exec",
         ),
         "_protoc_minimal": attr.label(
-            default = "//src/google/protobuf/compiler:protoc_minimal",
+            default = "//src/google/protobuf/compiler/release:protoc_minimal",
             executable = True,
             cfg = "exec",
         ),
@@ -63,33 +64,21 @@ compile_edition_defaults = rule(
 )
 
 def _embed_edition_defaults_impl(ctx):
-    if ctx.attr.encoding == "base64":
-        args = "--encoding=base64"
-    elif ctx.attr.encoding == "octal":
-        args = "--encoding=octal"
-    else:
-        fail("Unknown encoding %s" % ctx.attr.encoding)
-    ctx.actions.run_shell(
+    args = ctx.actions.args()
+    args.add(ctx.attr.encoding, format = "--encoding=%s")
+    args.add(ctx.file.defaults, format = "--defaults_path=%s")
+    args.add(ctx.file.template, format = "--template_path=%s")
+    args.add(ctx.outputs.output, format = "--output_path=%s")
+    args.add(ctx.attr.placeholder, format = "--placeholder=%s")
+
+    ctx.actions.run(
+        executable = ctx.executable._escape,
+        arguments = [args],
         outputs = [ctx.outputs.output],
         inputs = [ctx.file.defaults, ctx.file.template],
-        tools = [ctx.executable._escape],
-        command = """
-            DEFAULTS_RAW=$({escape} {args} < {defaults})
-            # Windows requires extra escaping.
-            DEFAULTS_ESCAPED=$(echo $DEFAULTS_RAW | sed 's/\\\\/\\\\\\\\/g' || 
-                echo $DEFAULTS_RAW | sed 's/\\\\\\\\/\\\\\\\\\\\\\\\\/g')
-            cp -f {template} {output}
-            # MacOS requires a backup file.
-            sed -i.bak \"s|{placeholder}|$DEFAULTS_ESCAPED|g\" {output}
-        """.format(
-            escape = ctx.executable._escape.path,
-            args = args,
-            defaults = ctx.file.defaults.path,
-            template = ctx.file.template.path,
-            output = ctx.outputs.output.path,
-            placeholder = ctx.attr.placeholder,
-        ),
     )
+
+    return DefaultInfo(files = depset([ctx.outputs.output]))
 
 embed_edition_defaults = rule(
     doc = "genrule to embed edition defaults binary data into a template file.",
@@ -116,8 +105,8 @@ embed_edition_defaults = rule(
         ),
         "encoding": attr.string(
             default = "octal",
-            values = ["octal", "base64"],
-            doc = "The encoding format to use for the binary data (octal or base64)",
+            values = ["octal", "base64", "decimal_array", "hex_array"],
+            doc = "The encoding format to use for the binary data (octal, base64, decimal_array, hex_array)",
         ),
         "_escape": attr.label(
             default = "//editions:internal_defaults_escape",

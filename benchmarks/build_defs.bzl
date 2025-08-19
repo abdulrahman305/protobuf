@@ -5,16 +5,11 @@
 # license that can be found in the LICENSE file or at
 # https://developers.google.com/open-source/licenses/bsd
 
+load("@rules_cc//cc:cc_binary.bzl", "cc_binary")
 load("//bazel:cc_proto_library.bzl", "cc_proto_library")
 load("//bazel:proto_library.bzl", "proto_library")
 
-# begin:google_only
-# _is_google3 = True
-# end:google_only
-
-# begin:github_only
 _is_google3 = False
-# end:github_only
 
 def tmpl_cc_binary(name, gen, args, replacements = [], **kwargs):
     srcs = [name + ".cc"]
@@ -26,9 +21,9 @@ def tmpl_cc_binary(name, gen, args, replacements = [], **kwargs):
     )
 
     if _is_google3:
-        kwargs["malloc"] = "//base:system_malloc"
+        kwargs["malloc"] = "@bazel_tools//tools/cpp:malloc"
         kwargs["features"] = ["-static_linking_mode"]
-    native.cc_binary(
+    cc_binary(
         name = name,
         srcs = srcs,
         **kwargs

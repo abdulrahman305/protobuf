@@ -25,6 +25,7 @@
 #include "google/protobuf/compiler/rust/context.h"
 #include "google/protobuf/compiler/rust/naming.h"
 #include "google/protobuf/descriptor.h"
+#include "upb/reflection/def.hpp"
 
 namespace google {
 namespace protobuf {
@@ -45,213 +46,77 @@ std::vector<std::pair<absl::string_view, int32_t>> EnumValuesInput(
   return result;
 }
 
-void EnumProxiedInMapValue(Context& ctx, const EnumDescriptor& desc) {
+void TypeConversions(Context& ctx, const EnumDescriptor& desc) {
   switch (ctx.opts().kernel) {
     case Kernel::kCpp:
-      for (const auto& t : kMapKeyTypes) {
-        ctx.Emit(
-            {{"map_new_thunk", RawMapThunk(ctx, desc, t.thunk_ident, "new")},
-             {"map_free_thunk", RawMapThunk(ctx, desc, t.thunk_ident, "free")},
-             {"map_clear_thunk",
-              RawMapThunk(ctx, desc, t.thunk_ident, "clear")},
-             {"map_size_thunk", RawMapThunk(ctx, desc, t.thunk_ident, "size")},
-             {"map_insert_thunk",
-              RawMapThunk(ctx, desc, t.thunk_ident, "insert")},
-             {"map_get_thunk", RawMapThunk(ctx, desc, t.thunk_ident, "get")},
-             {"map_remove_thunk",
-              RawMapThunk(ctx, desc, t.thunk_ident, "remove")},
-             {"map_iter_thunk", RawMapThunk(ctx, desc, t.thunk_ident, "iter")},
-             {"map_iter_get_thunk",
-              RawMapThunk(ctx, desc, t.thunk_ident, "iter_get")},
-             {"to_ffi_key_expr", t.rs_to_ffi_key_expr},
-             io::Printer::Sub("ffi_key_t", [&] { ctx.Emit(t.rs_ffi_key_t); })
-                 .WithSuffix(""),
-             io::Printer::Sub("key_t", [&] { ctx.Emit(t.rs_key_t); })
-                 .WithSuffix(""),
-             io::Printer::Sub("from_ffi_key_expr",
-                              [&] { ctx.Emit(t.rs_from_ffi_key_expr); })
-                 .WithSuffix("")},
-            R"rs(
-      extern "C" {
-        fn $map_new_thunk$() -> $pbr$::RawMap;
-        fn $map_free_thunk$(m: $pbr$::RawMap);
-        fn $map_clear_thunk$(m: $pbr$::RawMap);
-        fn $map_size_thunk$(m: $pbr$::RawMap) -> usize;
-        fn $map_insert_thunk$(m: $pbr$::RawMap, key: $ffi_key_t$, value: $name$) -> bool;
-        fn $map_get_thunk$(m: $pbr$::RawMap, key: $ffi_key_t$, value: *mut $name$) -> bool;
-        fn $map_remove_thunk$(m: $pbr$::RawMap, key: $ffi_key_t$, value: *mut $name$) -> bool;
-        fn $map_iter_thunk$(m: $pbr$::RawMap) -> $pbr$::UntypedMapIterator;
-        fn $map_iter_get_thunk$(iter: &mut $pbr$::UntypedMapIterator, key: *mut $ffi_key_t$, value: *mut $name$);
-      }
-      impl $pb$::ProxiedInMapValue<$key_t$> for $name$ {
-        fn map_new(_private: $pbi$::Private) -> $pb$::Map<$key_t$, Self> {
-            unsafe {
-                $pb$::Map::from_inner(
-                    $pbi$::Private,
-                    $pbr$::InnerMap::new($pbi$::Private, $map_new_thunk$())
-                )
-            }
-        }
+      ctx.Emit(
+          R"rs(
+          impl $pbr$::CppMapTypeConversions for $name$ {
+              fn get_prototype() -> $pbr$::MapValue {
+                  Self::to_map_value(Self::default())
+              }
 
-        unsafe fn map_free(_private: $pbi$::Private, map: &mut $pb$::Map<$key_t$, Self>) {
-            unsafe { $map_free_thunk$(map.as_raw($pbi$::Private)); }
-        }
+              fn to_map_value(self) -> $pbr$::MapValue {
+                  $pbr$::MapValue::make_u32(self.0 as u32)
+              }
 
-        fn map_clear(mut map: $pb$::Mut<'_, $pb$::Map<$key_t$, Self>>) {
-            unsafe { $map_clear_thunk$(map.as_raw($pbi$::Private)); }
-        }
-
-        fn map_len(map: $pb$::View<'_, $pb$::Map<$key_t$, Self>>) -> usize {
-            unsafe { $map_size_thunk$(map.as_raw($pbi$::Private)) }
-        }
-
-        fn map_insert(mut map: $pb$::Mut<'_, $pb$::Map<$key_t$, Self>>, key: $pb$::View<'_, $key_t$>, value: impl $pb$::IntoProxied<Self>) -> bool {
-            unsafe { $map_insert_thunk$(map.as_raw($pbi$::Private), $to_ffi_key_expr$, value.into_proxied($pbi$::Private)) }
-        }
-
-        fn map_get<'a>(map: $pb$::View<'a, $pb$::Map<$key_t$, Self>>, key: $pb$::View<'_, $key_t$>) -> Option<$pb$::View<'a, Self>> {
-            let key = $to_ffi_key_expr$;
-            let mut value = $std$::mem::MaybeUninit::uninit();
-            let found = unsafe { $map_get_thunk$(map.as_raw($pbi$::Private), key, value.as_mut_ptr()) };
-            if !found {
-                return None;
-            }
-            Some(unsafe { value.assume_init() })
-        }
-
-        fn map_remove(mut map: $pb$::Mut<'_, $pb$::Map<$key_t$, Self>>, key: $pb$::View<'_, $key_t$>) -> bool {
-            let mut value = $std$::mem::MaybeUninit::uninit();
-            unsafe { $map_remove_thunk$(map.as_raw($pbi$::Private), $to_ffi_key_expr$, value.as_mut_ptr()) }
-        }
-
-        fn map_iter(map: $pb$::View<'_, $pb$::Map<$key_t$, Self>>) -> $pb$::MapIter<'_, $key_t$, Self> {
-            // SAFETY:
-            // - The backing map for `map.as_raw` is valid for at least '_.
-            // - A View that is live for '_ guarantees the backing map is unmodified for '_.
-            // - The `iter` function produces an iterator that is valid for the key
-            //   and value types, and live for at least '_.
-            unsafe {
-                $pb$::MapIter::from_raw(
-                    $pbi$::Private,
-                    $map_iter_thunk$(map.as_raw($pbi$::Private))
-                )
-            }
-        }
-
-        fn map_iter_next<'a>(iter: &mut $pb$::MapIter<'a, $key_t$, Self>) -> Option<($pb$::View<'a, $key_t$>, $pb$::View<'a, Self>)> {
-            // SAFETY:
-            // - The `MapIter` API forbids the backing map from being mutated for 'a,
-            //   and guarantees that it's the correct key and value types.
-            // - The thunk is safe to call as long as the iterator isn't at the end.
-            // - The thunk always writes to key and value fields and does not read.
-            // - The thunk does not increment the iterator.
-            unsafe {
-                iter.as_raw_mut($pbi$::Private).next_unchecked::<$key_t$, Self, _, _>(
-                    $pbi$::Private,
-                    $map_iter_get_thunk$,
-                    |ffi_key| $from_ffi_key_expr$,
-                    $std$::convert::identity,
-                )
-            }
-        }
-      }
-      )rs");
-      }
+              unsafe fn from_map_value<'a>(value: $pbr$::MapValue) -> $pb$::View<'a, Self> {
+                  debug_assert_eq!(value.tag, $pbr$::MapValueTag::U32);
+                  $name$(unsafe { value.val.u as i32 })
+              }
+          }
+          )rs");
       return;
     case Kernel::kUpb:
-      for (const auto& t : kMapKeyTypes) {
-        ctx.Emit({io::Printer::Sub("key_t", [&] { ctx.Emit(t.rs_key_t); })
-                      .WithSuffix("")},
-                 R"rs(
-      impl $pb$::ProxiedInMapValue<$key_t$> for $name$ {
-          fn map_new(_private: $pbi$::Private) -> $pb$::Map<$key_t$, Self> {
-              let arena = $pbr$::Arena::new();
-              let raw = unsafe {
-                  $pbr$::upb_Map_New(
-                      arena.raw(),
-                      <$key_t$ as $pbr$::UpbTypeConversions>::upb_type(),
-                      $pbr$::CType::Enum)
-              };
-              $pb$::Map::from_inner(
-                  $pbi$::Private,
-                  $pbr$::InnerMap::new($pbi$::Private, raw, arena))
-          }
+      ctx.Emit(R"rs(
+            impl $pbr$::UpbTypeConversions for $name$ {
+                fn upb_type() -> $pbr$::CType {
+                    $pbr$::CType::Enum
+                }
 
-          unsafe fn map_free(_private: $pbi$::Private, _map: &mut $pb$::Map<$key_t$, Self>) {
-              // No-op: the memory will be dropped by the arena.
-          }
+                fn to_message_value(
+                    val: $pb$::View<'_, Self>) -> $pbr$::upb_MessageValue {
+                    $pbr$::upb_MessageValue { int32_val: val.0 }
+                }
 
-          fn map_clear(mut map: $pb$::Mut<'_, $pb$::Map<$key_t$, Self>>) {
-              unsafe {
-                  $pbr$::upb_Map_Clear(map.as_raw($pbi$::Private));
-              }
-          }
+                unsafe fn into_message_value_fuse_if_required(
+                  _raw_parent_arena: $pbr$::RawArena,
+                  val: Self) -> $pbr$::upb_MessageValue {
+                    $pbr$::upb_MessageValue { int32_val: val.0 }
+                }
 
-          fn map_len(map: $pb$::View<'_, $pb$::Map<$key_t$, Self>>) -> usize {
-              unsafe {
-                  $pbr$::upb_Map_Size(map.as_raw($pbi$::Private))
-              }
-          }
-
-          fn map_insert(mut map: $pb$::Mut<'_, $pb$::Map<$key_t$, Self>>, key: $pb$::View<'_, $key_t$>, value: impl $pb$::IntoProxied<Self>) -> bool {
-              let arena = map.inner($pbi$::Private).raw_arena($pbi$::Private);
-              unsafe {
-                  $pbr$::upb_Map_InsertAndReturnIfInserted(
-                      map.as_raw($pbi$::Private),
-                      <$key_t$ as $pbr$::UpbTypeConversions>::to_message_value(key),
-                      $pbr$::upb_MessageValue { int32_val: value.into_proxied($pbi$::Private).0 },
-                      arena
-                  )
-              }
-          }
-
-          fn map_get<'a>(map: $pb$::View<'a, $pb$::Map<$key_t$, Self>>, key: $pb$::View<'_, $key_t$>) -> Option<$pb$::View<'a, Self>> {
-              let mut val = $std$::mem::MaybeUninit::uninit();
-              let found = unsafe {
-                  $pbr$::upb_Map_Get(
-                      map.as_raw($pbi$::Private),
-                      <$key_t$ as $pbr$::UpbTypeConversions>::to_message_value(key),
-                      val.as_mut_ptr())
-              };
-              if !found {
-                  return None;
-              }
-              Some($name$(unsafe { val.assume_init().int32_val }))
-          }
-
-          fn map_remove(mut map: $pb$::Mut<'_, $pb$::Map<$key_t$, Self>>, key: $pb$::View<'_, $key_t$>) -> bool {
-              let mut val = $std$::mem::MaybeUninit::uninit();
-              unsafe {
-                  $pbr$::upb_Map_Delete(
-                      map.as_raw($pbi$::Private),
-                      <$key_t$ as $pbr$::UpbTypeConversions>::to_message_value(key),
-                      val.as_mut_ptr())
-              }
-          }
-          fn map_iter(map: $pb$::View<'_, $pb$::Map<$key_t$, Self>>) -> $pb$::MapIter<'_, $key_t$, Self> {
-              // SAFETY: View<Map<'_,..>> guarantees its RawMap outlives '_.
-              unsafe {
-                  $pb$::MapIter::from_raw($pbi$::Private, $pbr$::RawMapIter::new($pbi$::Private, map.as_raw($pbi$::Private)))
-              }
-          }
-
-          fn map_iter_next<'a>(
-              iter: &mut $pb$::MapIter<'a, $key_t$, Self>
-          ) -> Option<($pb$::View<'a, $key_t$>, $pb$::View<'a, Self>)> {
-              // SAFETY: MapIter<'a, ..> guarantees its RawMapIter outlives 'a.
-              unsafe { iter.as_raw_mut($pbi$::Private).next_unchecked($pbi$::Private) }
-                  // SAFETY: MapIter<K, V> returns key and values message values
-                  //         with the variants for K and V active.
-                  .map(|(k, v)| unsafe {(
-                      <$key_t$ as $pbr$::UpbTypeConversions>::from_message_value(k),
-                      Self(v.int32_val),
-                  )})
-          }
-      }
-      )rs");
-      }
+                unsafe fn from_message_value<'msg>(val: $pbr$::upb_MessageValue)
+                    -> $pb$::View<'msg, Self> {
+                  $name$(unsafe { val.int32_val })
+                }
+            }
+            )rs");
       return;
   }
+}
+
+void MiniTable(Context& ctx, const EnumDescriptor& desc,
+               upb::EnumDefPtr upb_enum) {
+  if (ctx.is_cpp() || !desc.is_closed()) {
+    return;
+  }
+  std::string mini_descriptor = upb_enum.MiniDescriptorEncode();
+  ctx.Emit({{"mini_descriptor", mini_descriptor},
+            {"mini_descriptor_length", mini_descriptor.size()}},
+           R"rs(
+    unsafe impl $pbr$::AssociatedMiniTableEnum for $name$ {
+      fn mini_table() -> *const $pbr$::upb_MiniTableEnum {
+        static MINI_TABLE: $std$::sync::OnceLock<$pbr$::MiniTableEnumPtr> =
+            $std$::sync::OnceLock::new();
+        MINI_TABLE.get_or_init(|| unsafe {
+          $pbr$::MiniTableEnumPtr($pbr$::upb_MiniTableEnum_Build(
+              "$mini_descriptor$".as_ptr(), $mini_descriptor_length$,
+              $pbr$::THREAD_LOCAL_ARENA.with(|a| a.raw()),
+              $std$::ptr::null_mut()))
+        }).0
+      }
+    }
+  )rs");
 }
 
 }  // namespace
@@ -295,7 +160,8 @@ std::vector<RustEnumValue> EnumValues(
   return result;
 }
 
-void GenerateEnumDefinition(Context& ctx, const EnumDescriptor& desc) {
+void GenerateEnumDefinition(Context& ctx, const EnumDescriptor& desc,
+                            upb::EnumDefPtr upb_enum) {
   std::string name = EnumRsName(desc);
   ABSL_CHECK(desc.value_count() > 0);
   std::vector<RustEnumValue> values =
@@ -322,6 +188,29 @@ void GenerateEnumDefinition(Context& ctx, const EnumDescriptor& desc) {
                }
              }
            }},
+          {"constant_name_fn",
+           [&] {
+             ctx.Emit({{"name_cases",
+                        [&] {
+                          for (const auto& value : values) {
+                            std::string number_str = absl::StrCat(value.number);
+                            ctx.Emit({{"variant_name", value.name},
+                                      {"number", number_str}},
+                                     R"rs(
+                              $number$ => "$variant_name$",
+                            )rs");
+                          }
+                        }}},
+                      R"rs(
+                fn constant_name(&self) -> $Option$<&'static str> {
+                  #[allow(unreachable_patterns)] // In the case of aliases, just emit them all and let the first one match.
+                  Some(match self.0 {
+                    $name_cases$
+                    _ => return None
+                  })
+                }
+              )rs");
+           }},
           // The default value of an enum is the first listed value.
           // The compiler checks that this is equal to 0 for open enums.
           {"default_int_value", absl::StrCat(desc.value(0)->number())},
@@ -338,7 +227,7 @@ void GenerateEnumDefinition(Context& ctx, const EnumDescriptor& desc) {
               impl $std$::convert::TryFrom<i32> for $name$ {
                 type Error = $pb$::UnknownEnumValue<Self>;
 
-                fn try_from(val: i32) -> Result<$name$, Self::Error> {
+                fn try_from(val: i32) -> $Result$<$name$, Self::Error> {
                   if <Self as $pbi$::Enum>::is_known(val) {
                     Ok(Self(val))
                   } else {
@@ -357,16 +246,19 @@ void GenerateEnumDefinition(Context& ctx, const EnumDescriptor& desc) {
             )rs");
              }
            }},
-          {"impl_proxied_in_map", [&] { EnumProxiedInMapValue(ctx, desc); }},
+          {"type_conversions_impl", [&] { TypeConversions(ctx, desc); }},
+          {"mini_table", [&] { MiniTable(ctx, desc, upb_enum); }},
       },
       R"rs(
       #[repr(transparent)]
-      #[derive(Clone, Copy, PartialEq, Eq)]
+      #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
       pub struct $name$(i32);
 
       #[allow(non_upper_case_globals)]
       impl $name$ {
         $variants$
+
+        $constant_name_fn$
       }
 
       impl $std$::convert::From<$name$> for i32 {
@@ -385,13 +277,11 @@ void GenerateEnumDefinition(Context& ctx, const EnumDescriptor& desc) {
 
       impl $std$::fmt::Debug for $name$ {
         fn fmt(&self, f: &mut $std$::fmt::Formatter<'_>) -> $std$::fmt::Result {
-          f.debug_tuple(stringify!($name$)).field(&self.0).finish()
-        }
-      }
-
-      impl $pb$::IntoProxied<$name$> for $name$ {
-        fn into_proxied(self, _: $pbi$::Private) -> Self {
-          self
+          if let Some(constant_name) = self.constant_name() {
+            write!(f, "$name$::{}", constant_name)
+          } else {
+            write!(f, "$name$::from({})", self.0)
+          }
         }
       }
 
@@ -401,33 +291,48 @@ void GenerateEnumDefinition(Context& ctx, const EnumDescriptor& desc) {
         }
       }
 
+      impl $pbi$::SealedInternal for $name$ {}
+
       impl $pb$::Proxied for $name$ {
         type View<'a> = $name$;
       }
 
-      impl $pb$::ViewProxy<'_> for $name$ {
+      impl $pb$::Proxy<'_> for $name$ {}
+      impl $pb$::ViewProxy<'_> for $name$ {}
+
+      impl $pb$::AsView for $name$ {
         type Proxied = $name$;
 
         fn as_view(&self) -> $name$ {
           *self
         }
+      }
 
-        fn into_view<'shorter>(self) -> $pb$::View<'shorter, $name$> {
+      impl<'msg> $pb$::IntoView<'msg> for $name$ {
+        fn into_view<'shorter>(self) -> $name$ where 'msg: 'shorter {
           self
         }
       }
 
       unsafe impl $pb$::ProxiedInRepeated for $name$ {
+        fn repeated_new(_private: $pbi$::Private) -> $pb$::Repeated<Self> {
+          $pbr$::new_enum_repeated()
+        }
+
+        unsafe fn repeated_free(_private: $pbi$::Private, f: &mut $pb$::Repeated<Self>) {
+          $pbr$::free_enum_repeated(f)
+        }
+
         fn repeated_len(r: $pb$::View<$pb$::Repeated<Self>>) -> usize {
-          $pbr$::cast_enum_repeated_view($pbi$::Private, r).len()
+          $pbr$::cast_enum_repeated_view(r).len()
         }
 
         fn repeated_push(r: $pb$::Mut<$pb$::Repeated<Self>>, val: impl $pb$::IntoProxied<$name$>) {
-          $pbr$::cast_enum_repeated_mut($pbi$::Private, r).push(val.into_proxied($pbi$::Private))
+          $pbr$::cast_enum_repeated_mut(r).push(val.into_proxied($pbi$::Private))
         }
 
         fn repeated_clear(r: $pb$::Mut<$pb$::Repeated<Self>>) {
-          $pbr$::cast_enum_repeated_mut($pbi$::Private, r).clear()
+          $pbr$::cast_enum_repeated_mut(r).clear()
         }
 
         unsafe fn repeated_get_unchecked(
@@ -436,7 +341,7 @@ void GenerateEnumDefinition(Context& ctx, const EnumDescriptor& desc) {
         ) -> $pb$::View<$name$> {
           // SAFETY: In-bounds as promised by the caller.
           unsafe {
-            $pbr$::cast_enum_repeated_view($pbi$::Private, r)
+            $pbr$::cast_enum_repeated_view(r)
               .get_unchecked(index)
               .try_into()
               .unwrap_unchecked()
@@ -450,7 +355,7 @@ void GenerateEnumDefinition(Context& ctx, const EnumDescriptor& desc) {
         ) {
           // SAFETY: In-bounds as promised by the caller.
           unsafe {
-            $pbr$::cast_enum_repeated_mut($pbi$::Private, r)
+            $pbr$::cast_enum_repeated_mut(r)
               .set_unchecked(index, val.into_proxied($pbi$::Private))
           }
         }
@@ -459,8 +364,8 @@ void GenerateEnumDefinition(Context& ctx, const EnumDescriptor& desc) {
             src: $pb$::View<$pb$::Repeated<Self>>,
             dest: $pb$::Mut<$pb$::Repeated<Self>>,
         ) {
-          $pbr$::cast_enum_repeated_mut($pbi$::Private, dest)
-            .copy_from($pbr$::cast_enum_repeated_view($pbi$::Private, src))
+          $pbr$::cast_enum_repeated_mut(dest)
+            .copy_from($pbr$::cast_enum_repeated_view(src))
         }
 
         fn repeated_reserve(
@@ -469,7 +374,7 @@ void GenerateEnumDefinition(Context& ctx, const EnumDescriptor& desc) {
         ) {
             // SAFETY:
             // - `f.as_raw()` is valid.
-            $pbr$::reserve_enum_repeated_mut($pbi$::Private, r, additional);
+            $pbr$::reserve_enum_repeated_mut(r, additional);
         }
       }
 
@@ -482,23 +387,10 @@ void GenerateEnumDefinition(Context& ctx, const EnumDescriptor& desc) {
         }
       }
 
-      $impl_proxied_in_map$
-      )rs");
-}
+      $type_conversions_impl$
 
-void GenerateEnumThunksCc(Context& ctx, const EnumDescriptor& desc) {
-  ctx.Emit(
-      {
-          {"cpp_t", cpp::QualifiedClassName(&desc)},
-          {"rs_t", UnderscoreDelimitFullName(ctx, desc.full_name())},
-          {"abi", "\"C\""},  // Workaround for syntax highlight bug in VSCode.
-      },
-      R"cc(
-        extern $abi$ {
-          __PB_RUST_EXPOSE_SCALAR_MAP_METHODS_FOR_VALUE_TYPE(
-              $cpp_t$, $rs_t$, $cpp_t$, $cpp_t$, value, cpp_value)
-        }
-      )cc");
+      $mini_table$
+      )rs");
 }
 
 }  // namespace rust

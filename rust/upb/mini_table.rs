@@ -1,22 +1,24 @@
 // Protocol Buffers - Google's data interchange format
-// Copyright 2024 Google LLC.  All rights reserved.
+// Copyright 2025 Google LLC.  All rights reserved.
 //
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file or at
 // https://developers.google.com/open-source/licenses/bsd
 
-use crate::opaque_pointee::opaque_pointee;
-use std::ptr::NonNull;
+use super::sys::mini_table::mini_table as mt_sys;
+use super::AssociatedMiniTable;
+use core::marker::PhantomData;
 
-opaque_pointee!(upb_MiniTable);
-pub type RawMiniTable = NonNull<upb_MiniTable>;
+pub type MiniTable = mt_sys::upb_MiniTable;
 
-opaque_pointee!(upb_MiniTableField);
-pub type RawMiniTableField = NonNull<upb_MiniTableField>;
+pub struct MiniTableFieldPtr<T> {
+    _raw: *const mt_sys::upb_MiniTableField,
+    _phantom: PhantomData<T>,
+}
 
-extern "C" {
-    pub fn upb_MiniTable_FindFieldByNumber(
-        m: *const upb_MiniTable,
-        number: u32,
-    ) -> *const upb_MiniTableField;
+impl<T: AssociatedMiniTable> MiniTableFieldPtr<T> {
+    pub unsafe fn get_field_by_index(index: u32) -> MiniTableFieldPtr<T> {
+        let field = unsafe { mt_sys::upb_MiniTable_GetFieldByIndex(T::mini_table(), index) };
+        return MiniTableFieldPtr { _raw: field, _phantom: PhantomData };
+    }
 }
