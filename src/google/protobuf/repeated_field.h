@@ -830,13 +830,7 @@ inline void RepeatedField<Element>::Resize(int new_size, const Element& value) {
 template <typename Element>
 inline const Element& RepeatedField<Element>::Get(int index) const
     ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  if constexpr (internal::GetBoundsCheckMode() ==
-                internal::BoundsCheckMode::kAbort) {
-    internal::RuntimeAssertInBounds(index, size());
-  } else {
-    ABSL_DCHECK_GE(index, 0);
-    ABSL_DCHECK_LT(index, size());
-  }
+  internal::RuntimeAssertInBounds(index, size());
   return elements(is_soo())[index];
 }
 
@@ -859,13 +853,7 @@ inline Element& RepeatedField<Element>::at(int index)
 template <typename Element>
 inline Element* RepeatedField<Element>::Mutable(int index)
     ABSL_ATTRIBUTE_LIFETIME_BOUND {
-  if constexpr (internal::GetBoundsCheckMode() ==
-                internal::BoundsCheckMode::kAbort) {
-    internal::RuntimeAssertInBounds(index, size());
-  } else {
-    ABSL_DCHECK_GE(index, 0);
-    ABSL_DCHECK_LT(index, size());
-  }
+  internal::RuntimeAssertInBounds(index, size());
   return &elements(is_soo())[index];
 }
 
@@ -921,7 +909,15 @@ inline void RepeatedField<Element>::AddForwardIterator(Iter begin, Iter end) {
   const int old_size = size(is_soo);
   int capacity = Capacity(is_soo);
   Element* elem = unsafe_elements(is_soo);
-  int new_size = old_size + static_cast<int>(std::distance(begin, end));
+  // Check for signed overflow.
+  const size_t distance = std::distance(begin, end);
+  ABSL_CHECK_LE(distance, static_cast<size_t>(std::numeric_limits<int>::max()))
+      << "Input too large";
+  // Check again for signed overflow.
+  const int delta = static_cast<int>(distance);
+  ABSL_CHECK_LE(old_size, std::numeric_limits<int>::max() - delta)
+      << "Input too large";
+  const int new_size = old_size + delta;
   if (ABSL_PREDICT_FALSE(new_size > capacity)) {
     Grow(is_soo, old_size, new_size);
     is_soo = false;
@@ -1295,7 +1291,6 @@ inline void RepeatedField<Element>::Truncate(int new_size) {
 template <>
 PROTOBUF_EXPORT size_t
 RepeatedField<absl::Cord>::SpaceUsedExcludingSelfLong() const;
-
 
 // -------------------------------------------------------------------
 

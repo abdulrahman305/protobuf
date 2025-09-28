@@ -350,6 +350,22 @@ class PROTOBUF_EXPORT UntypedMapBase {
 
   TypeInfo type_info() const { return type_info_; }
 
+#if defined(ABSL_HAVE_THREAD_SANITIZER)
+  // Using type_info_ as an arbitrary member that we can read/write.
+  void ConstAccess() const {
+    auto t = type_info_;
+    asm volatile("" : "+r"(t));
+  }
+  void MutableAccess() {
+    auto t = type_info_;
+    asm volatile("" : "+r"(t));
+    type_info_ = t;
+  }
+#else
+  void ConstAccess() const {}
+  void MutableAccess() {}
+#endif
+
  protected:
   // 16 bytes is the minimum useful size for the array cache in the arena.
   static constexpr map_index_t kMinTableSize = 16 / sizeof(void*);
@@ -364,7 +380,6 @@ class PROTOBUF_EXPORT UntypedMapBase {
     std::swap(index_of_first_non_null_, other->index_of_first_non_null_);
     std::swap(type_info_, other->type_info_);
     std::swap(table_, other->table_);
-    std::swap(arena_, other->arena_);
   }
 
   void UntypedMergeFrom(const UntypedMapBase& other);
@@ -584,7 +599,7 @@ inline void UntypedMapIterator::PlusPlus() {
 class MapFieldBaseForParse {
  public:
   const UntypedMapBase& GetMap() const {
-    const auto p = payload_.load(std::memory_order_acquire);
+    const void* p = prototype_or_payload_.load(std::memory_order_acquire);
     // If this instance has a payload, then it might need sync'n.
     if (ABSL_PREDICT_FALSE(IsPayload(p))) {
       sync_map_with_repeated.load(std::memory_order_relaxed)(*this, false);
@@ -593,7 +608,7 @@ class MapFieldBaseForParse {
   }
 
   UntypedMapBase* MutableMap() {
-    const auto p = payload_.load(std::memory_order_acquire);
+    const void* p = prototype_or_payload_.load(std::memory_order_acquire);
     // If this instance has a payload, then it might need sync'n.
     if (ABSL_PREDICT_FALSE(IsPayload(p))) {
       sync_map_with_repeated.load(std::memory_order_relaxed)(*this, true);
@@ -623,25 +638,20 @@ class MapFieldBaseForParse {
   // The prototype is a `Message`, but due to restrictions on constexpr in the
   // codegen we are receiving it as `void` during constant evaluation.
   explicit constexpr MapFieldBaseForParse(const void* prototype_as_void)
-      : prototype_as_void_(prototype_as_void) {}
+      : prototype_or_payload_(prototype_as_void) {}
 
-  enum class TaggedPtr : uintptr_t {};
-  explicit MapFieldBaseForParse(const Message* prototype, TaggedPtr ptr)
-      : payload_(ptr), prototype_as_void_(prototype) {
-    // We should not have a payload on construction.
-    ABSL_DCHECK(!IsPayload(ptr));
-  }
+  explicit MapFieldBaseForParse(const Message* prototype)
+      : prototype_or_payload_(prototype) {}
 
   ~MapFieldBaseForParse() = default;
 
   static constexpr uintptr_t kHasPayloadBit = 1;
 
-  static bool IsPayload(TaggedPtr p) {
-    return static_cast<uintptr_t>(p) & kHasPayloadBit;
+  static bool IsPayload(const void* p) {
+    return reinterpret_cast<uintptr_t>(p) & kHasPayloadBit;
   }
 
-  mutable std::atomic<TaggedPtr> payload_{};
-  const void* prototype_as_void_;
+  mutable std::atomic<const void*> prototype_or_payload_;
 };
 
 // The value might be of different signedness, so use memcpy to extract it.
@@ -1421,7 +1431,7 @@ class Map : private internal::KeyMapBase<internal::KeyForBase<Key>> {
 
   void swap(Map& other) {
     if (arena() == other.arena()) {
-      InternalSwap(&other);
+      this->InternalSwap(&other);
     } else {
       size_t other_size = other.size();
       Node* other_copy = this->CloneFromOther(other);
@@ -1431,10 +1441,6 @@ class Map : private internal::KeyMapBase<internal::KeyForBase<Key>> {
         this->MergeIntoEmpty(other_copy, other_size);
       }
     }
-  }
-
-  void InternalSwap(Map* other) {
-    internal::UntypedMapBase::InternalSwap(other);
   }
 
   hasher hash_function() const { return {}; }

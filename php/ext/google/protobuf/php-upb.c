@@ -507,8 +507,7 @@ Error, UINTPTR_MAX is undefined
 #if defined(__ELF__) || defined(__wasm__)
 
 #define UPB_LINKARR_APPEND(name) \
-  __attribute__((retain, used,   \
-                 section("linkarr_" #name))) UPB_NO_SANITIZE_ADDRESS
+  __attribute__((section("linkarr_" #name))) UPB_NO_SANITIZE_ADDRESS
 #define UPB_LINKARR_DECLARE(name, type) \
   extern type __start_linkarr_##name;   \
   extern type __stop_linkarr_##name;    \
@@ -520,8 +519,7 @@ Error, UINTPTR_MAX is undefined
 
 /* As described in: https://stackoverflow.com/a/22366882 */
 #define UPB_LINKARR_APPEND(name) \
-  __attribute__((retain, used,   \
-                 section("__DATA,__la_" #name))) UPB_NO_SANITIZE_ADDRESS
+  __attribute__((section("__DATA,__la_" #name))) UPB_NO_SANITIZE_ADDRESS
 #define UPB_LINKARR_DECLARE(name, type)     \
   extern type __start_linkarr_##name __asm( \
       "section$start$__DATA$__la_" #name);  \
@@ -541,9 +539,8 @@ Error, UINTPTR_MAX is undefined
 
 // Usage of __attribute__ here probably means this is Clang-specific, and would
 // not work on MSVC.
-#define UPB_LINKARR_APPEND(name)         \
-  __declspec(allocate("la_" #name "$j")) \
-  __attribute__((retain, used)) UPB_NO_SANITIZE_ADDRESS
+#define UPB_LINKARR_APPEND(name) \
+  __declspec(allocate("la_" #name "$j")) UPB_NO_SANITIZE_ADDRESS
 #define UPB_LINKARR_DECLARE(name, type)                               \
   __declspec(allocate("la_" #name "$a")) type __start_linkarr_##name; \
   __declspec(allocate("la_" #name "$z")) type __stop_linkarr_##name;  \
@@ -10216,6 +10213,17 @@ bool upb_MiniTable_SetSubEnum(upb_MiniTable* table, upb_MiniTableField* field,
   UPB_ASSERT(sub);
 
   if (field->UPB_PRIVATE(descriptortype) != kUpb_FieldType_Enum) {
+    return false;
+  }
+
+  if ((table->UPB_PRIVATE(ext) & kUpb_ExtMode_IsMapEntry) &&
+      !upb_MiniTableEnum_CheckValue(sub, 0)) {
+    // An enum used in a map must include 0 as a value.  This matches a check
+    // performed in protoc ("Enum value in map must define 0 as the first
+    // value").  Protoc should ensure that we never get here.
+    //
+    // This ends up being important if we receive wire messages where a map
+    // entry omits the value (and thus defaults to 0).
     return false;
   }
 

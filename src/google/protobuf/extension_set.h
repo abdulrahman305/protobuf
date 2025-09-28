@@ -301,6 +301,11 @@ class PROTOBUF_EXPORT ExtensionSet {
   void AppendToList(const Descriptor* extendee, const DescriptorPool* pool,
                     std::vector<const FieldDescriptor*>* output) const;
 
+  // Whether there are any fields which are currently present. Note that this
+  // is different from IsCompletelyEmpty(), which returns false if the list has
+  // any capacity; and Size(), which also accounts for cleared fields.
+  bool IsEmpty() const;
+
   // =================================================================
   // Accessors
   //
@@ -743,70 +748,11 @@ class PROTOBUF_EXPORT ExtensionSet {
         const MessageLite* extendee, const ExtensionSet* extension_set,
         int number, uint8_t* target, io::EpsCopyOutputStream* stream) const;
     size_t ByteSize(int number) const;
-
-    // A tagged pointer that can hold either a FieldDescriptor* or
-    // const MessageLite*. The LSB is used for tagging. Mimicks
-    // LazyFIeld::UnparsedPayload.
-    struct DescriptorOrPrototype {
-     private:
-      enum Tag : uintptr_t {
-        kTagFieldDescriptor = 0,
-        kTagPrototype = 1,
-        kTagBits = 1,
-        kRemoveMask = ~kTagBits,
-      };
-
-     public:
-      // Sets the value to a FieldDescriptor*.
-      void Set(const FieldDescriptor* desc) {
-        ABSL_DCHECK_EQ(reinterpret_cast<uintptr_t>(desc) & kTagBits, 0u)
-            << "FieldDescriptor pointer is not sufficiently aligned.";
-        value = reinterpret_cast<uintptr_t>(desc) | kTagFieldDescriptor;
-      }
-      // Sets the value to an ExtensionInfo*. We store a pointer to the info.
-      void Set(const MessageLite* prototype) {
-        ABSL_DCHECK_EQ(reinterpret_cast<uintptr_t>(prototype) & kTagBits, 0u)
-            << "MessageLite pointer is not sufficiently aligned.";
-        value = reinterpret_cast<uintptr_t>(prototype) | kTagPrototype;
-      }
-
-      // Returns true if the held type is FieldDescriptor*.
-      bool IsFieldDescriptor() const { return tag() == kTagFieldDescriptor; }
-
-      // Returns true if the held type is ExtensionInfo*.
-      bool IsPrototype() const { return tag() == kTagPrototype; }
-
-      // Returns the FieldDescriptor* per tag type. It can still return nullptr.
-      const FieldDescriptor* GetFieldDescriptor() const {
-        if (IsFieldDescriptor()) {
-          return AsFieldDescriptor();
-        } else {
-          return nullptr;
-        }
-      }
-
-      // Requires: IsPrototype() is true.
-      const MessageLite* AsPrototype() const {
-        ABSL_DCHECK(IsPrototype());
-        return reinterpret_cast<const MessageLite*>(value & kRemoveMask);
-      }
-
-     private:
-      // Requires: IsFieldDescriptor() is true.
-      const FieldDescriptor* AsFieldDescriptor() const {
-        ABSL_DCHECK(IsFieldDescriptor());
-        return reinterpret_cast<const FieldDescriptor*>(value & kRemoveMask);
-      }
-
-      Tag tag() const { return static_cast<Tag>(value & kTagBits); }
-
-      uintptr_t value;
-    };
-
     size_t MessageSetItemByteSize(int number) const;
     void Clear();
     int GetSize() const;
     void Free();
+    bool IsSet() const { return is_repeated ? GetSize() > 0 : !is_cleared; }
     size_t SpaceUsedExcludingSelfLong() const;
     bool IsInitialized(const ExtensionSet* ext_set, const MessageLite* extendee,
                        int number, Arena* arena) const;
@@ -939,10 +885,7 @@ class PROTOBUF_EXPORT ExtensionSet {
     // The descriptor for this extension, if one exists and is known.  May be
     // nullptr.  Must not be nullptr if the descriptor for the extension does
     // not live in the same pool as the descriptor for the containing type.
-    //
-    // For lazy message extensions, this will store the prototype of the
-    // message type.
-    DescriptorOrPrototype descriptor_or_prototype;
+    const FieldDescriptor* descriptor;
   };
 
   // The Extension struct is small enough to be passed by value so we use it
@@ -970,8 +913,9 @@ class PROTOBUF_EXPORT ExtensionSet {
   const Extension* FindOrNullInLargeMap(int key) const;
   Extension* FindOrNullInLargeMap(int key);
 
-  // Returns a pair of <Extension*, bool> where the bool is true if the
-  // extension was newly inserted.
+  // Inserts a new (key, Extension) into the ExtensionSet (and returns true), or
+  // finds the already-existing Extension for that key (returns false).
+  // The Extension* will point to the new-or-found Extension.
   std::pair<Extension*, bool> Insert(int key);
   // Same as insert for the large map.
   std::pair<Extension*, bool> InternalInsertIntoLargeMap(int key);
@@ -1066,6 +1010,19 @@ class PROTOBUF_EXPORT ExtensionSet {
     for (Iterator it = begin; it != end; ++it) func(it->first, it->second);
   }
 
+  // Loops through [begin, end), and returns true as soon as some element
+  // satisfies predicate. Returns false if no element satisfies predicate.
+  template <typename Iterator, typename KeyValueFunctor>
+  static bool AnyOfNoPrefetch(Iterator begin, Iterator end,
+                              KeyValueFunctor predicate) {
+    for (Iterator it = begin; it != end; ++it) {
+      if (predicate(it->first, it->second)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   // Applies a functor to the <int, Extension&> pairs in sorted order.
   template <typename KeyValueFunctor>
   void ForEachNoPrefetch(KeyValueFunctor func) {
@@ -1086,6 +1043,18 @@ class PROTOBUF_EXPORT ExtensionSet {
       return;
     }
     ForEachNoPrefetch(flat_begin(), flat_end(), std::move(func));
+  }
+
+  // Loops through all <int, Extension&> pairs in sorted order, and returns true
+  // as soon as some element satisfies `predicate`. Returns false if no element
+  // satisfies predicate.
+  template <typename KeyValueFunctor>
+  bool AnyOfNoPrefetch(KeyValueFunctor predicate) const {
+    if (ABSL_PREDICT_FALSE(is_large())) {
+      return AnyOfNoPrefetch(map_.large->begin(), map_.large->end(),
+                             std::move(predicate));
+    }
+    return AnyOfNoPrefetch(flat_begin(), flat_end(), std::move(predicate));
   }
 
   // Returns true if nothing is allocated in the ExtensionSet.
@@ -1112,15 +1081,6 @@ class PROTOBUF_EXPORT ExtensionSet {
   void InternalExtensionMergeFromIntoUninitializedExtension(
       Extension& dst_extension, const MessageLite* extendee, int number,
       const Extension& other_extension, Arena* other_arena);
-  // Returns the prototype for a LazyMessage from the extension. If it's null,
-  // find one from the extension registry.
-  const MessageLite* GetOrFindPrototypeForLazyMessage(
-      const Extension& ext, const MessageLite* extendee, int number) const {
-    ABSL_DCHECK(ext.is_lazy);
-    auto* prototype = ext.descriptor_or_prototype.AsPrototype();
-    if (prototype != nullptr) return prototype;
-    return FindPrototypeForLazyMessage(extendee, number);
-  }
 
   inline static bool is_packable(WireFormatLite::WireType type) {
     switch (type) {
@@ -1190,8 +1150,8 @@ class PROTOBUF_EXPORT ExtensionSet {
 
   // Find the prototype for a LazyMessage from the extension registry. Returns
   // null if the extension is not found.
-  const MessageLite* FindPrototypeForLazyMessage(const MessageLite* extendee,
-                                                 int number) const;
+  const MessageLite* GetPrototypeForLazyMessage(const MessageLite* extendee,
+                                                int number) const;
 
   // Returns true if extension is present and lazy.
   bool HasLazy(int number) const;
@@ -1203,14 +1163,7 @@ class PROTOBUF_EXPORT ExtensionSet {
   // Gets the extension with the given number, creating it if it does not
   // already exist.  Returns true if the extension did not already exist.
   bool MaybeNewExtension(int number, const FieldDescriptor* descriptor,
-                         Extension** result_ptr) {
-    Extension::DescriptorOrPrototype descriptor_or_prototype;
-    descriptor_or_prototype.Set(descriptor);
-    return MaybeNewExtension(number, descriptor_or_prototype, result_ptr);
-  }
-  bool MaybeNewExtension(
-      int number, Extension::DescriptorOrPrototype descriptor_or_prototype,
-      Extension** result_ptr);
+                         Extension** result);
 
   // Gets the repeated extension for the given descriptor, creating it if
   // it does not exist.

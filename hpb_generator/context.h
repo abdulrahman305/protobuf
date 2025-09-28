@@ -22,6 +22,9 @@
 #include "upb/reflection/def.hpp"
 #include "upb_generator/common/cpp_to_upb_def.h"
 
+// Must be last.
+#include "upb/port/def.inc"
+
 namespace google {
 namespace protobuf {
 namespace hpb_generator {
@@ -65,20 +68,18 @@ class Context final {
     printer_.Emit(format, loc);
   }
 
-  // TODO: b/373438292 - Remove EmitLegacy in favor of Emit.
-  // This is an interim solution while we migrate from Output to io::Printer
-  template <class... Arg>
-  void EmitLegacy(absl::string_view format, const Arg&... arg) {
-    auto res = absl::Substitute(format, arg...);
-    printer_.Emit(res);
-  }
-
   const Options& options() { return options_; }
   io::Printer& printer() { return printer_; }
 
   inline std::string GetLayoutIndex(const FieldDescriptor* field) {
     return absl::StrCat(
         upb::generator::FindBaseFieldDef(pool_, field).layout_index());
+  }
+
+  inline int GetLayoutSize(const Descriptor* descriptor) {
+    return upb::generator::FindMessageDef(pool_, descriptor)
+        .mini_table()
+        ->UPB_PRIVATE(size);
   }
 
   Context(const Context&) = delete;
@@ -150,5 +151,7 @@ void WrapNamespace(const google::protobuf::FileDescriptor* file, Context& ctx, T
 }  // namespace hpb_generator
 }  // namespace protobuf
 }  // namespace google
+
+#include "upb/port/undef.inc"
 
 #endif  // GOOGLE_PROTOBUF_COMPILER_HPB_CONTEXT_H__

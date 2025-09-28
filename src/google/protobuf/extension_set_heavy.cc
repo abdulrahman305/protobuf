@@ -55,26 +55,17 @@ void ExtensionSet::AppendToList(
     std::vector<const FieldDescriptor*>* output) const {
   ForEach(
       [extendee, pool, &output](int number, const Extension& ext) {
-        bool has = false;
-        if (ext.is_repeated) {
-          has = ext.GetSize() > 0;
-        } else {
-          has = !ext.is_cleared;
-        }
-
-        if (has) {
+        if (ext.IsSet()) {
           // TODO: Looking up each field by number is somewhat
           // unfortunate.
           //   Is there a better way?  The problem is that descriptors are
           //   lazily-initialized, so they might not even be constructed until
           //   AppendToList() is called.
 
-          const auto* field_descriptor =
-              ext.descriptor_or_prototype.GetFieldDescriptor();
-          if (field_descriptor == nullptr) {
+          if (ext.descriptor == nullptr) {
             output->push_back(pool->FindExtensionByNumber(extendee, number));
           } else {
-            output->push_back(field_descriptor);
+            output->push_back(ext.descriptor);
           }
         }
       },
