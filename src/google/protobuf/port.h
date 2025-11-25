@@ -18,7 +18,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <new>
-#include <optional>
 #include <string>
 #include <type_traits>
 #include <typeinfo>
@@ -33,6 +32,7 @@
 #include "absl/base/attributes.h"
 #include "absl/base/config.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/optional.h"
 
 #if defined(ABSL_HAVE_ADDRESS_SANITIZER)
 #include <sanitizer/asan_interface.h>
@@ -221,11 +221,11 @@ inline ToRef DownCast(From& f) {
 
 // Looks up the name of `T` via RTTI, if RTTI is available.
 template <typename T>
-inline std::optional<absl::string_view> RttiTypeName() {
+inline absl::optional<absl::string_view> RttiTypeName() {
 #if PROTOBUF_RTTI
   return typeid(T).name();
 #else
-  return std::nullopt;
+  return absl::nullopt;
 #endif
 }
 
@@ -665,6 +665,30 @@ inline bool IsMemoryPoisoned([[maybe_unused]] const void* p) {
 #endif
 }
 
+inline constexpr bool ShouldBatchSingularString() {
+#ifdef PROTOBUF_INTERNAL_BATCH_SINGULAR_STRING
+  return true;
+#else
+  return false;
+#endif
+}
+
+inline constexpr bool ShouldBatchRepeatedString() {
+#ifdef PROTOBUF_INTERNAL_BATCH_REPEATED_STRING
+  return true;
+#else
+  return false;
+#endif
+}
+
+inline constexpr bool ShouldBatchRepeatedNumeric() {
+#ifdef PROTOBUF_INTERNAL_BATCH_REPEATED_NUMERIC
+  return true;
+#else
+  return false;
+#endif
+}
+
 #if defined(ABSL_HAVE_THREAD_SANITIZER)
 // TODO: it would be preferable to use __tsan_external_read/
 // __tsan_external_write, but they can cause dlopen issues.
@@ -753,6 +777,9 @@ class NoopDebugCounter {
   explicit constexpr NoopDebugCounter() = default;
   constexpr void Inc() {}
 };
+
+// Pretty random large number that seems like a safe allocation on most systems.
+inline constexpr size_t kSafeStringSize = 50000000;
 
 // Default empty string object. Don't use this directly. Instead, call
 // GetEmptyString() to get the reference. This empty string is aligned with a
