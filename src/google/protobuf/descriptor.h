@@ -337,6 +337,11 @@ bool IsEnumFullySequential(const EnumDescriptor* enum_desc);
 const std::string& DefaultValueStringAsString(const FieldDescriptor* field);
 const std::string& NameOfEnumAsString(const EnumValueDescriptor* descriptor);
 
+struct NameLimits {
+  static constexpr int kPackageName = 511;
+  static constexpr int kReservedName = std::numeric_limits<uint16_t>::max();
+};
+
 }  // namespace internal
 
 // Provide an Abseil formatter for edition names.
@@ -1131,11 +1136,6 @@ class PROTOBUF_EXPORT FieldDescriptor : private internal::SymbolBase,
   friend class compiler::cpp::CppGenerator;
   int legacy_proto_ctype() const { return legacy_proto_ctype_; }
   bool has_legacy_proto_ctype() const;
-
-  // Returns true if this field was syntactically written with "optional" in the
-  // .proto file. Excludes singular proto3 fields that do not have a label.
-  ABSL_DEPRECATED("Use has_presence() instead.")
-  bool has_optional_keyword() const;
 
   // Get the merged features that apply to this field.  These are specified in
   // the .proto file through the feature options in the message definition.
